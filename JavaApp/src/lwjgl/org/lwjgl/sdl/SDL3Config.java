@@ -5,7 +5,7 @@ final class SDL3Config {
     }
 
     // AMETHYST_SDL_TRACE=1 as a custom env var turns on the native trace lines, so it turns on the java ones too
-    static final boolean TRACE = flag("amethyst.sdl.trace", envFlag("AMETHYST_SDL_TRACE"));
+    static final boolean TRACE = flag("amethyst.sdl.trace", true);
     static final boolean BACKGROUND_PAUSE = flag("amethyst.sdl.backgroundPause", true);
     static final boolean GL_KEEP_LOAD_PATH = flag("amethyst.sdl.glKeepLoadPath", false);
     static final boolean GL_SDL_PROC = flag("amethyst.sdl.glSdlProc", false);

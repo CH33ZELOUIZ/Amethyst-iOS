@@ -22,7 +22,7 @@ static BOOL AMTraceOn(void) {
     static int on = -1;
     if (on < 0) {
         const char *v = getenv("AMETHYST_SDL_TRACE");
-        on = (v != NULL && *v != '\0' && *v != '0') ? 1 : 0;
+        on = (v != NULL && *v == '0') ? 0 : 1; // Duo fork: trace on by default
     }
     return on == 1;
 }
