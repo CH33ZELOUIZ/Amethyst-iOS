@@ -87,7 +87,8 @@ void setSafeArea(CGSize screenSize, CGRect frame) {
 
 UIEdgeInsets getDefaultSafeArea() {
     UIEdgeInsets safeArea = UIApplication.sharedApplication.windows.firstObject.safeAreaInsets;
-    CGSize screenSize = UIScreen.mainScreen.bounds.size;
+    UIWindow *duoWin = UIApplication.sharedApplication.windows.firstObject;
+    CGSize screenSize = duoWin ? duoWin.bounds.size : UIScreen.mainScreen.bounds.size;
     if (screenSize.width < screenSize.height) {
         safeArea.left = safeArea.top;
         safeArea.right = safeArea.bottom;
