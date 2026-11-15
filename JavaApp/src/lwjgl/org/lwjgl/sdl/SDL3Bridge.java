@@ -584,6 +584,14 @@ final class SDL3Bridge {
     }
 
     private static boolean exitArmed;
+    private static int exitGeneration;
+
+    // a new window means the game is still alive (e.g. falling back from OpenGL to Vulkan), so a pending exit must not fire
+    static synchronized void cancelExitWatchdog() {
+        exitGeneration++;
+        exitArmed = false;
+        trace("[SDL3 TRACE] exit watchdog cancelled, a new window exists");
+    }
 
     // after the window is destroyed there is nothing left to wait for. if the normal shutdown
     // path hangs (it does on ios), force the jvm out so amethyst gets its exit() and goes home
@@ -592,6 +600,7 @@ final class SDL3Bridge {
             return;
         }
         exitArmed = true;
+        final int gen = exitGeneration;
         trace("[SDL3 TRACE] shutdown: " + why + ", exit watchdog armed");
         Thread watchdog = new Thread(new Runnable() {
             public void run() {
@@ -599,6 +608,11 @@ final class SDL3Bridge {
                     Thread.sleep(5000L);
                 } catch (InterruptedException e) {
                     return;
+                }
+                synchronized (SDL3Bridge.class) {
+                    if (gen != exitGeneration) {
+                        return;
+                    }
                 }
                 trace("[SDL3 TRACE] shutdown still not finished after 5s, calling System.exit(0)");
                 Thread hard = new Thread(new Runnable() {

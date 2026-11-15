@@ -519,6 +519,7 @@ public class SDLVideo {
       SDL3Bridge.trace("[SDL3 TRACE] SDL_CreateWindow END window=" + window);
       if (window != 0L) {
          SDL3Windows.created(window);
+         SDL3Bridge.cancelExitWatchdog();
          SDL3Bridge.attachWindow(window);
       } else {
          SDL3Bridge.warn("SDL_CreateWindow " + w + "x" + h + " failed: " + SDL3Bridge.mainThreadError());
@@ -577,6 +578,7 @@ public class SDLVideo {
       SDL3Bridge.trace("[SDL3 TRACE] SDL_CreateWindowWithProperties END window=" + window);
       if (window != 0L) {
          SDL3Windows.created(window);
+         SDL3Bridge.cancelExitWatchdog();
          SDL3Bridge.attachWindow(window);
       } else {
          SDL3Bridge.warn("SDL_CreateWindowWithProperties failed: " + SDL3Bridge.mainThreadError());
