@@ -10,11 +10,11 @@
     "iconURL": "https://raw.githubusercontent.com/CH33ZELOUIZ/Amethyst-iOS/duo-optimized/Natives/Assets.xcassets/AppLogo.imageset/AppLogo.png",
     "tintColor": "7B3FE4",
     "versions": [{
-      "version": "1.0.4",
+      "version": "1.0.5",
       "date": "2026-11-15",
-      "downloadURL": "https://github.com/CH33ZELOUIZ/Amethyst-iOS/releases/download/duo-4/Amethyst-Duo-4.ipa",
-      "size": 218310952,
-      "sha256": "adaaede50a0a137fbbceefb88e9e750798c11a5b0aee0452ca3f7a3c8d10cbbb",
+      "downloadURL": "https://github.com/CH33ZELOUIZ/Amethyst-iOS/releases/download/duo-5/Amethyst-Duo-5.ipa",
+      "size": 218310870,
+      "sha256": "ad49efd312f147b40d39d5eeb2f9ead526aaae2dc5a74654da19f440d4d5f4f9",
       "minOSVersion": "14.0"
     }],
     "appPermissions": {"entitlements": [], "privacy": {}}
