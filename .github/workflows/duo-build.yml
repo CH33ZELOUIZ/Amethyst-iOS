@@ -23,6 +23,11 @@ jobs:
           architecture: aarch64
       - name: Build tools
         run: brew install cmake ldid wget make
+      - name: Stamp version
+        run: |
+          V="1.0.${{ github.run_number }}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $V" Natives/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" Natives/Info.plist
       - name: Build IPA
         run: |
           export PATH="$(brew --prefix)/opt/make/libexec/gnubin:$(brew --prefix)/bin:$PATH"

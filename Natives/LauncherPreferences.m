@@ -104,8 +104,18 @@ NSString* getSelectedJavaHome(NSString* defaultJRETag, int minVersion) {
     NSDictionary<NSString *, NSString *> *selected = pref[@"0"];
     NSString *selectedVer = selected[defaultJRETag];
     if (minVersion > selectedVer.intValue) {
-        NSArray *sortedVersions = [pref.allKeys valueForKeyPath:@"self.integerValue"];
-        sortedVersions = [sortedVersions sortedArrayUsingSelector:@selector(compare:)];
+        // Candidates: versions in saved prefs plus every runtime bundled in the app.
+        // Saved prefs from an older install may not list newer bundled runtimes (e.g. Java 25).
+        NSMutableSet<NSNumber *> *candidates = [NSMutableSet set];
+        for (NSString *key in pref.allKeys) {
+            if (key.integerValue > 0) [candidates addObject:@(key.integerValue)];
+        }
+        for (NSNumber *v in @[@8, @17, @21, @25]) {
+            NSString *bundled = [NSString stringWithFormat:@"%@/java_runtimes/java-%@-openjdk", NSBundle.mainBundle.bundlePath, v];
+            if ([NSFileManager.defaultManager fileExistsAtPath:bundled]) [candidates addObject:v];
+        }
+        NSArray *sortedVersions = [candidates.allObjects sortedArrayUsingSelector:@selector(compare:)];
+        selectedVer = nil;
         for (NSNumber *version in sortedVersions) {
             if (version.intValue >= minVersion) {
                 selectedVer = version.stringValue;
@@ -119,7 +129,7 @@ NSString* getSelectedJavaHome(NSString* defaultJRETag, int minVersion) {
     }
 
     id selectedDir = pref[selectedVer];
-    if ([selectedDir isEqualToString:@"internal"]) {
+    if (selectedDir == nil || [selectedDir isEqualToString:@"internal"]) {
         selectedDir = [NSString stringWithFormat:@"%@/java_runtimes/java-%@-openjdk", NSBundle.mainBundle.bundlePath, selectedVer];
     } else {
         selectedDir = [NSString stringWithFormat:@"%s/java_runtimes/%@", getenv("AME_HOME"), selectedDir];
