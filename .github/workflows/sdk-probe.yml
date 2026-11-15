@@ -1,20 +1,12 @@
 name: SDK probe
 on:
   workflow_dispatch:
-  push:
-    branches: [duo-optimized]
 jobs:
   probe:
     runs-on: xcode-27
     steps:
       - run: |
-          sw_vers; xcodebuild -version || true
-          ls /Applications | grep -i xcode
-          for x in /Applications/Xcode_27.1.app /Applications/Xcode_27.2.app; do
-            [ -d "$x" ] || continue
-            echo "=== $x"
-            SDK=$(ls -d $x/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS27*.sdk | head -1)
-            echo $SDK
-            grep -rIl -i "hinge\|ReservedRegion\|ArrangementView" $SDK/System/Library/Frameworks/UIKit.framework/Headers | head -30
-            grep -rIh -i -B2 -A8 "UIHingeInteraction\b\|reservedRegionsOfKind\|UIReservedRegion\b" $SDK/System/Library/Frameworks/UIKit.framework/Headers | head -300
-          done
+          H=/Applications/Xcode_27.1.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS27.1.sdk/System/Library/Frameworks/UIKit.framework/Headers
+          grep -v "^\s*///" $H/UIHinge.h | grep -v '^\s*$'
+          echo =========RR
+          grep -v "^\s*///" $H/UIViewReservedRegion.h | grep -v '^\s*$'
