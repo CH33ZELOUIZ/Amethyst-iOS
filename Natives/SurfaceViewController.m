@@ -52,6 +52,10 @@ static GameSurfaceView* pojavWindow;
 @property(nonatomic) id controllerConnectCallback, controllerDisconnectCallback;
 
 @property(nonatomic) CGFloat screenScale;
+@property(nonatomic) CGRect duoGameFrame;      // CGRectNull = fill view
+@property(nonatomic) CGRect duoControlsFrame;  // CGRectNull = use saved safe area
+@property(nonatomic) id duoHingeInteraction;
+@property(nonatomic) BOOL duoFolded;
 @property(nonatomic) CGFloat mouseSpeed;
 @property(nonatomic) CGRect clickRange;
 @property(nonatomic) BOOL isMacCatalystApp, shouldHideControlsFromRecording,
@@ -63,6 +67,36 @@ static GameSurfaceView* pojavWindow;
 @property(nonatomic) UIImpactFeedbackGenerator *mediumHaptic;
 
 @end
+
+
+// iOS 27 exposes the touchscreen as a virtual GCMouse ("CoreDevice touchscreenGesture").
+// Treating it as a real mouse hides the touch controls, so ignore it.
+static BOOL isVirtualTouchMouse(GCMouse *mouse) {
+    NSString *name = mouse.vendorName ?: @"";
+    return [name rangeOfString:@"touchscreenGesture" options:NSCaseInsensitiveSearch].location != NSNotFound;
+}
+
+
+#pragma mark - iPhone Duo fold support
+
+#if __has_include(<UIKit/UIHinge.h>)
+#define DUO_SDK 1
+#endif
+
+// Reads the active fold ("division") region of the view. Returns CGRectNull when the device is flat / not foldable.
+static CGRect duoActiveFoldRegion(UIView *view) {
+#ifdef DUO_SDK
+    if (@available(iOS 27.1, *)) {
+        NSArray<UIViewReservedRegion *> *regions = [view reservedRegionsOfKind:UIViewReservedRegionKind.divisionRegionKind];
+        for (UIViewReservedRegion *region in regions) {
+            if (region.active && !CGRectIsEmpty(region.frame)) {
+                return region.frame;
+            }
+        }
+    }
+#endif
+    return CGRectNull;
+}
 
 @implementation SurfaceViewController
 
@@ -114,6 +148,8 @@ static GameSurfaceView* pojavWindow;
     self.rootView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.frame.size.width + 30.0, self.view.frame.size.height)];
     [self.view addSubview:self.rootView];
 
+    self.duoGameFrame = CGRectNull;
+    self.duoControlsFrame = CGRectNull;
     self.ctrlView = [[ControlLayout alloc] initWithFrame:getSafeArea(self.view.frame)];
 
     [self performSelector:@selector(initCategory_Navigation)];
@@ -131,6 +167,7 @@ static GameSurfaceView* pojavWindow;
 
     [self.rootView addSubview:self.touchView];
     [self.rootView addSubview:self.ctrlView];
+    [self duoSetupHingeObserver];
 
     [self performSelector:@selector(setupCategory_Navigation)];
 
@@ -208,8 +245,12 @@ static GameSurfaceView* pojavWindow;
 
     [KeyboardInput initKeycodeTable];
     self.mouseConnectCallback = [[NSNotificationCenter defaultCenter] addObserverForName:GCMouseDidConnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
-        NSLog(@"Input: Mouse connected!");
         GCMouse* mouse = note.object;
+        if (isVirtualTouchMouse(mouse)) {
+            NSLog(@"Input: Ignoring virtual touchscreen mouse %@", mouse.vendorName);
+            return;
+        }
+        NSLog(@"Input: Mouse connected!");
         [self registerMouseCallbacks:mouse];
         self.mousePointerView.hidden = isGrabbing || !virtualMouseEnabled;
         [self setNeedsUpdateOfPrefersPointerLocked];
@@ -227,7 +268,7 @@ static GameSurfaceView* pojavWindow;
             self.ctrlView.hidden = NO;
         }
     }];
-    if (GCMouse.current != nil) {
+    if (GCMouse.current != nil && !isVirtualTouchMouse(GCMouse.current)) {
         [self registerMouseCallbacks:GCMouse.current];
     }
     
@@ -337,7 +378,7 @@ static GameSurfaceView* pojavWindow;
 
     self.shouldHideControlsFromRecording = getPrefFloat(@"control.recording_hide");
     [self.ctrlView hideViewFromCapture:self.shouldHideControlsFromRecording];
-    self.ctrlView.frame = getSafeArea(self.view.frame);
+    self.ctrlView.frame = [self duoCurrentControlsFrame];
 
     // Update gestures state
     self.slideableHotbar = getPrefBool(@"control.slideable_hotbar");
@@ -373,7 +414,7 @@ static GameSurfaceView* pojavWindow;
     }
 
     if (self.surfaceView.superview != nil) {
-        self.surfaceView.frame = self.surfaceView.superview.frame;
+        self.surfaceView.frame = CGRectIsNull(self.duoGameFrame) ? self.surfaceView.superview.frame : self.duoGameFrame;
     }
 
     resolutionScale = getPrefFloat(@"video.resolution") / 100.0;
@@ -517,6 +558,74 @@ static GameSurfaceView* pojavWindow;
     }
 }
 
+
+// Computes where the game and the touch controls go.
+// Half-folded with a horizontal crease (DS style): game on the top half, controls on the bottom half.
+// Half-folded with a vertical crease (book style): game on the left page, controls on the right page.
+// Flat / not foldable: game fills the view, controls use the saved safe area.
+- (void)duoRecomputeLayout {
+    CGRect bounds = self.view.bounds;
+    CGRect fold = duoActiveFoldRegion(self.view);
+    if (CGRectIsNull(fold)) {
+        self.duoFolded = NO;
+        self.duoGameFrame = CGRectNull;
+        self.duoControlsFrame = CGRectNull;
+        return;
+    }
+    self.duoFolded = YES;
+    if (fold.size.width >= fold.size.height) {
+        CGFloat topH = MAX(0, CGRectGetMinY(fold));
+        CGFloat botY = CGRectGetMaxY(fold);
+        self.duoGameFrame = CGRectMake(0, 0, bounds.size.width, topH);
+        self.duoControlsFrame = CGRectMake(0, botY, bounds.size.width, MAX(0, bounds.size.height - botY));
+    } else {
+        CGFloat leftW = MAX(0, CGRectGetMinX(fold));
+        CGFloat rightX = CGRectGetMaxX(fold);
+        self.duoGameFrame = CGRectMake(0, 0, leftW, bounds.size.height);
+        self.duoControlsFrame = CGRectMake(rightX, 0, MAX(0, bounds.size.width - rightX), bounds.size.height);
+    }
+}
+
+- (CGRect)duoCurrentControlsFrame {
+    return CGRectIsNull(self.duoControlsFrame) ? getSafeArea(self.view.frame) : self.duoControlsFrame;
+}
+
+- (void)duoApplyLayout {
+    if (!self.surfaceView) return;
+    CGRect oldGame = self.duoGameFrame, oldCtrl = self.duoControlsFrame;
+    [self duoRecomputeLayout];
+    BOOL same = (CGRectEqualToRect(oldGame, self.duoGameFrame) || (CGRectIsNull(oldGame) && CGRectIsNull(self.duoGameFrame)))
+             && (CGRectEqualToRect(oldCtrl, self.duoControlsFrame) || (CGRectIsNull(oldCtrl) && CGRectIsNull(self.duoControlsFrame)));
+    if (same) return;
+    self.ctrlView.frame = [self duoCurrentControlsFrame];
+    [self.ctrlView.subviews makeObjectsPerformSelector:@selector(update)];
+    // touchView stays full size so the empty control area works as a touchpad for looking around.
+    [self updateSavedResolution];
+    [GyroInput updateOrientation];
+}
+
+- (void)duoSetupHingeObserver {
+#ifdef DUO_SDK
+    if (@available(iOS 27.1, *)) {
+        __weak typeof(self) weakSelf = self;
+        UIHingeInteraction *interaction = [[UIHingeInteraction alloc] initWithUpdateHandler:^(UIHingeInteraction *i, UIHingeInteractionUpdate *update) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf.view setNeedsLayout];
+                [weakSelf.view layoutIfNeeded];
+                [weakSelf duoApplyLayout];
+            });
+        }];
+        [self.view addInteraction:interaction];
+        self.duoHingeInteraction = interaction;
+    }
+#endif
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self duoApplyLayout];
+}
+
 - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator
 {
     [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext>  _Nonnull context) {
@@ -529,7 +638,7 @@ static GameSurfaceView* pojavWindow;
         [self viewWillTransitionToSize_Navigation:frame];
 
         // Update custom controls button position
-        self.ctrlView.frame = getSafeArea(self.view.frame);
+        self.ctrlView.frame = [self duoCurrentControlsFrame];
         [self.ctrlView.subviews makeObjectsPerformSelector:@selector(update)];
 
         // Update game resolution

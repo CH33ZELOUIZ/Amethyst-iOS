@@ -1,0 +1,88 @@
+# Builds an unsigned (ldid fake-signed) IPA with the iOS 27.1+ SDK, publishes a GitHub Release,
+# and regenerates the AltStore/SideStore source at altstore/source.json.
+name: Duo build
+on:
+  workflow_dispatch:
+  push:
+    branches: [duo-optimized]
+    paths-ignore: ['altstore/**', '**.md']
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '8'
+          architecture: aarch64
+      - name: Build tools
+        run: brew install cmake ldid wget make
+      - name: Stamp version
+        run: |
+          V="1.0.${{ github.run_number }}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $V" Natives/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" Natives/Info.plist
+      - name: Build IPA
+        run: |
+          export PATH="$(brew --prefix)/opt/make/libexec/gnubin:$(brew --prefix)/bin:$PATH"
+          xcodebuild -version
+          gmake -j"$(sysctl -n hw.ncpu)" package PLATFORM=2 BOOTJDK="$JAVA_HOME/bin"
+          ls -la artifacts
+      - name: Verify fold code was compiled in
+        run: |
+          APP=$(ls -d artifacts/Payload/*.app | head -1)
+          echo "APP=$APP"; ls "$APP" | head -30
+          BIN="$APP/$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$APP/Info.plist")"
+          echo "hinge symbol hits:"; strings "$BIN" | grep -c -E "UIHingeInteraction|divisionRegionKind"
+      - name: Publish release + source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          IPA=$(ls artifacts/*.ipa | head -1)
+          TAG="duo-${{ github.run_number }}"
+          NEW="artifacts/Amethyst-Duo-${{ github.run_number }}.ipa"
+          cp "$IPA" "$NEW"
+          SIZE=$(stat -f%z "$NEW")
+          SHA=$(shasum -a 256 "$NEW" | cut -d' ' -f1)
+          gh release create "$TAG" "$NEW" --title "Amethyst Duo build $TAG" --notes "Fold-aware Amethyst for iPhone Duo. Unsigned IPA: sign with SideStore/AltStore." --target "${{ github.sha }}"
+          URL="https://github.com/${{ github.repository }}/releases/download/$TAG/$(basename $NEW)"
+          VER="1.0.${{ github.run_number }}"
+          DATE=$(date -u +%Y-%m-%d)
+          BID=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$(ls -d artifacts/Payload/*.app | head -1)/Info.plist" 2>/dev/null || echo org.angelauramc.amethyst)
+          mkdir -p altstore
+          cat > altstore/source.json <<JSON
+          {
+            "name": "CH33ZE Apps",
+            "identifier": "com.ch33ze.source",
+            "apps": [{
+              "name": "Amethyst Duo",
+              "bundleIdentifier": "$BID",
+              "developerName": "CH33ZE (fork of AngelAuraMC)",
+              "subtitle": "Minecraft Java for iPhone Duo",
+              "localizedDescription": "Amethyst with iPhone Duo fold support: game on top and controls on the bottom when half folded, fullscreen when open.",
+              "iconURL": "https://raw.githubusercontent.com/${{ github.repository }}/duo-optimized/Natives/Assets.xcassets/AppLogo.imageset/AppLogo.png",
+              "tintColor": "7B3FE4",
+              "versions": [{
+                "version": "$VER",
+                "date": "$DATE",
+                "downloadURL": "$URL",
+                "size": $SIZE,
+                "sha256": "$SHA",
+                "minOSVersion": "14.0"
+              }],
+              "appPermissions": {"entitlements": [], "privacy": {}}
+            }],
+            "news": []
+          }
+          JSON
+          sed -i '' 's/^          //' altstore/source.json
+          git config user.name github-actions; git config user.email actions@github.com
+          git add altstore/source.json
+          git commit -m "altstore: $TAG [skip ci]"
+          git push origin HEAD:duo-optimized

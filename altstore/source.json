@@ -1,0 +1,23 @@
+{
+  "name": "CH33ZE Apps",
+  "identifier": "com.ch33ze.source",
+  "apps": [{
+    "name": "Amethyst Duo",
+    "bundleIdentifier": "org.angelauramc.amethyst",
+    "developerName": "CH33ZE (fork of AngelAuraMC)",
+    "subtitle": "Minecraft Java for iPhone Duo",
+    "localizedDescription": "Amethyst with iPhone Duo fold support: game on top and controls on the bottom when half folded, fullscreen when open.",
+    "iconURL": "https://raw.githubusercontent.com/CH33ZELOUIZ/Amethyst-iOS/duo-optimized/Natives/Assets.xcassets/AppLogo.imageset/AppLogo.png",
+    "tintColor": "7B3FE4",
+    "versions": [{
+      "version": "1.0.3",
+      "date": "2026-11-15",
+      "downloadURL": "https://github.com/CH33ZELOUIZ/Amethyst-iOS/releases/download/duo-3/Amethyst-Duo-3.ipa",
+      "size": 192013842,
+      "sha256": "3ef1dafaf34c6c1867c3a40e6aa891d72d6553ef7d83be22ff503f0f625c73f0",
+      "minOSVersion": "14.0"
+    }],
+    "appPermissions": {"entitlements": [], "privacy": {}}
+  }],
+  "news": []
+}
