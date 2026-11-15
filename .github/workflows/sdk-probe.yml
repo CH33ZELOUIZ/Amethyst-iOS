@@ -5,7 +5,7 @@ on:
     branches: [duo-optimized]
 jobs:
   probe:
-    runs-on: macos-26
+    runs-on: macos-27
     steps:
       - run: |
           sw_vers; xcodebuild -version || true
