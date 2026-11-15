@@ -50,6 +50,7 @@ jobs:
           VER="1.0.${{ github.run_number }}"
           DATE=$(date -u +%Y-%m-%d)
           BID=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$(ls -d artifacts/Payload/*.app | head -1)/Info.plist" 2>/dev/null || echo org.angelauramc.amethyst)
+          mkdir -p altstore
           cat > altstore/source.json <<JSON
           {
             "name": "CH33ZE Apps",
