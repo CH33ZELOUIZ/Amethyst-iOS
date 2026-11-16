@@ -3,9 +3,6 @@
 name: Duo build
 on:
   workflow_dispatch:
-  push:
-    branches: [duo-optimized]
-    paths-ignore: ['altstore/**', '**.md']
 permissions:
   contents: write
 jobs:
