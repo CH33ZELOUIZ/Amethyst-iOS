@@ -89,6 +89,9 @@ jobs:
           JSON
           sed -i '' 's/^          //' altstore/source.json
           git config user.name github-actions; git config user.email actions@github.com
+          # Stamp version changes the checked-out plist only for the IPA. Do not let
+          # that unrelated worktree change prevent rebasing the source-only commit.
+          git restore Natives/Info.plist
           git add altstore/source.json
           git commit -m "altstore: $TAG [skip ci]"
           # Builds take long enough for another commit to commonly land. Rebase this
