@@ -94,23 +94,31 @@
 
 - (void)loadDetailsOfMod:(NSMutableDictionary *)item {
     NSArray *response = [self getEndpoint:[NSString stringWithFormat:@"project/%@/version", item[@"id"]] params:nil];
-    if (!response) {
+    if (![response isKindOfClass:NSArray.class]) {
+        if (!self.lastError) self.lastError = [NSError errorWithDomain:@"Modrinth" code:5 userInfo:@{NSLocalizedDescriptionKey: localize(@"content.modrinth.invalid_versions", nil)}];
         return;
     }
-    NSArray<NSString *> *names = [response valueForKey:@"name"];
     NSMutableArray<NSString *> *mcNames = [NSMutableArray new];
+    NSMutableArray<NSString *> *names = [NSMutableArray new];
     NSMutableArray<NSString *> *urls = [NSMutableArray new];
     NSMutableArray<NSString *> *hashes = [NSMutableArray new];
     NSMutableArray<NSString *> *sizes = [NSMutableArray new];
-    [response enumerateObjectsUsingBlock:
-  ^(NSDictionary *version, NSUInteger i, BOOL *stop) {
+    for (id candidate in response) {
+        if (![candidate isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *version = candidate;
         NSDictionary *file = [version[@"files"] firstObject];
-        mcNames[i] = [version[@"game_versions"] firstObject];
-        sizes[i] = file[@"size"];
-        urls[i] = file[@"url"];
+        if (![file isKindOfClass:NSDictionary.class] || ![file[@"url"] isKindOfClass:NSString.class]) continue;
+        [names addObject:[version[@"name"] isKindOfClass:NSString.class] ? version[@"name"] : @""];
+        [mcNames addObject:[[version[@"game_versions"] firstObject] isKindOfClass:NSString.class] ? [version[@"game_versions"] firstObject] : @""];
+        [sizes addObject:[file[@"size"] isKindOfClass:NSNumber.class] ? file[@"size"] : @0];
+        [urls addObject:file[@"url"]];
         NSDictionary *hashesMap = file[@"hashes"];
-        hashes[i] = hashesMap[@"sha1"] ?: [NSNull null];
-    }];
+        [hashes addObject:[hashesMap[@"sha1"] isKindOfClass:NSString.class] ? hashesMap[@"sha1"] : @""];
+    }
+    if (!names.count) {
+        self.lastError = [NSError errorWithDomain:@"Modrinth" code:5 userInfo:@{NSLocalizedDescriptionKey: localize(@"content.modrinth.invalid_versions", nil)}];
+        return;
+    }
     item[@"versionNames"] = names;
     item[@"mcVersionNames"] = mcNames;
     item[@"versionSizes"] = sizes;
@@ -129,7 +137,7 @@
 
     NSData *indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&error];
     NSDictionary* indexDict = [NSJSONSerialization JSONObjectWithData:indexData options:kNilOptions error:&error];
-    if (error) {
+    if (error || ![indexDict isKindOfClass:NSDictionary.class] || ![indexDict[@"files"] isKindOfClass:NSArray.class]) {
         [downloader finishDownloadWithErrorString:[NSString stringWithFormat:localize(@"content.modpack.error_index", nil), error.localizedDescription]];
         return;
     }
@@ -137,7 +145,12 @@
     PLProfiles *profiles = PLProfiles.current;
 
     downloader.progress.totalUnitCount = [indexDict[@"files"] count];
-    for (NSDictionary *indexFile in indexDict[@"files"]) {
+    for (id candidate in indexDict[@"files"]) {
+        if (![candidate isKindOfClass:NSDictionary.class]) {
+            [downloader finishDownloadWithErrorString:@"The modpack index contains an invalid file entry."];
+            return;
+        }
+        NSDictionary *indexFile = candidate;
 /*
         if ([indexFile[@"downloads"] count] > 1) {
             [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Unhandled multiple files download %@", indexFile[@"downloads"]]];
@@ -146,7 +159,11 @@
 */
         NSString *url = [indexFile[@"downloads"] firstObject];
         NSString *sha = indexFile[@"hashes"][@"sha1"];
-        NSString *path = [destPath stringByAppendingPathComponent:indexFile[@"path"]];
+        NSString *path = [ModpackUtils safeDestinationForRelativePath:indexFile[@"path"] root:destPath error:&error];
+        if (![url isKindOfClass:NSString.class] || ![NSURL URLWithString:url].scheme.length || !path) {
+            [downloader finishDownloadWithErrorString:@"The modpack index contains an unsafe download entry."];
+            return;
+        }
         NSUInteger size = [indexFile[@"fileSize"] unsignedLongLongValue];
         NSURLSessionDownloadTask *task = [downloader createDownloadTask:url size:size sha:sha altName:nil toPath:path];
         if (task) {

@@ -183,4 +183,32 @@ static NSNumber *CFLoader(NSDictionary *filters) {
     id response = [self getEndpoint:[NSString stringWithFormat:@"mods/%@/files/%@", projectID, versionID] params:nil];
     return [response isKindOfClass:NSDictionary.class] ? [self.class versionFromFile:response[@"data"]] : nil;
 }
+
+- (void)loadDetailsOfMod:(NSMutableDictionary *)item {
+    NSArray *versions = [self versionsForProject:CFIdentifier(item[@"id"]) filters:@{@"isModpack": @YES}];
+    if (!versions) return;
+    NSMutableArray *names = [NSMutableArray new], *games = [NSMutableArray new], *urls = [NSMutableArray new], *hashes = [NSMutableArray new], *sizes = [NSMutableArray new], *reasons = [NSMutableArray new];
+    for (NSDictionary *version in versions) {
+        NSDictionary *file = [version[@"files"] firstObject];
+        if (![file isKindOfClass:NSDictionary.class]) continue;
+        [names addObject:CFString(version[@"name"])];
+        [games addObject:[version[@"game_versions"] firstObject] ?: @""];
+        [urls addObject:CFString(file[@"url"])];
+        [hashes addObject:CFString(file[@"hashes"][@"sha1"])];
+        [sizes addObject:file[@"size"] ?: @0];
+        BOOL neoForge = [version[@"loaders"] containsObject:@"neoforge"];
+        [reasons addObject:neoForge ? @"This NeoForge modpack cannot be installed yet: the standalone NeoForge installer is not wired into modpack profiles. Downloadability does not prove it can launch on this device." : @"CurseForge modpack installation is not available yet. The app can browse official CurseForge metadata with your API key, but it will not bypass CurseForge distribution rules or pretend this pack is playable."];
+    }
+    if (!names.count) {
+        self.lastError = [NSError errorWithDomain:@"CurseForge" code:3 userInfo:@{NSLocalizedDescriptionKey: NSLocalizedString(@"content.invalid_response", nil)}];
+        return;
+    }
+    item[@"versionNames"] = names;
+    item[@"mcVersionNames"] = games;
+    item[@"versionUrls"] = urls;
+    item[@"versionHashes"] = hashes;
+    item[@"versionSizes"] = sizes;
+    item[@"versionUnavailableReasons"] = reasons;
+    item[@"versionDetailsLoaded"] = @YES;
+}
 @end

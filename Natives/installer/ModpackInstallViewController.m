@@ -5,6 +5,7 @@
 #import "UIKit+hook.h"
 #import "WFWorkflowProgressView.h"
 #import "modpack/ModrinthAPI.h"
+#import "modpack/CurseForgeAPI.h"
 #import "config.h"
 #import "ios_uikit_bridge.h"
 #import "utils.h"
@@ -20,28 +21,46 @@
 @property(nonatomic) UIMenu *currentMenu;
 @property(nonatomic) NSMutableArray *list;
 @property(nonatomic) NSMutableDictionary *filters;
-@property ModrinthAPI *modrinth;
+@property ModpackAPI *api;
+@property UISegmentedControl *providerToggle;
 @end
 
 static ModpackInstallViewController *gPickerOwner;
 
 @implementation ModpackInstallViewController
 
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)providerConfigurationChanged:(NSNotification *)notification {
+    dispatch_async(dispatch_get_main_queue(), ^{ [self.providerToggle setEnabled:[CurseForgeAPI isConfigured] forSegmentAtIndex:1]; });
+}
+- (void)providerChanged:(UISegmentedControl *)sender {
+    if (sender.selectedSegmentIndex == 1 && ![CurseForgeAPI isConfigured]) { sender.selectedSegmentIndex = 0; return; }
+    self.api = sender.selectedSegmentIndex == 1 ? [CurseForgeAPI new] : [ModrinthAPI new];
+    self.list = nil;
+    [self loadSearchResultsWithPrevList:NO];
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
 
-    //NSString *curseforgeAPIKey = CONFIG_CURSEFORGE_API_KEY;
+
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.searchController.searchResultsUpdater = self;
     self.searchController.obscuresBackgroundDuringPresentation = NO;
     self.navigationItem.searchController = self.searchController;
-    self.modrinth = [ModrinthAPI new];
+    self.api = [ModrinthAPI new];
     self.filters = @{
         @"isModpack": @(YES),
-        @"name": @" "
+        @"name": @""
         // mcVersion
     }.mutableCopy;
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Import .mrpack" style:UIBarButtonItemStylePlain target:self action:@selector(actionImportMrpack)];
+    self.providerToggle = [[UISegmentedControl alloc] initWithItems:@[@"Modrinth", @"CurseForge"]];
+    self.providerToggle.selectedSegmentIndex = 0;
+    [self.providerToggle setEnabled:[CurseForgeAPI isConfigured] forSegmentAtIndex:1];
+    [self.providerToggle addTarget:self action:@selector(providerChanged:) forControlEvents:UIControlEventValueChanged];
+    self.navigationItem.titleView = self.providerToggle;
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(providerConfigurationChanged:) name:@"CurseForgeConfigurationDidChange" object:nil];
     [self updateSearchResults];
 }
 
@@ -69,7 +88,7 @@ static ModpackInstallViewController *gPickerOwner;
     }
     [NSFileManager.defaultManager removeItemAtPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"] error:nil];
     NSLog(@"[ModpackImport] Installing local modpack %@", dest);
-    [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:self.modrinth userInfo:@{@"localPath": dest}];
+    [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:[ModrinthAPI new] userInfo:@{@"localPath": dest}];
     UINavigationController *nav = self.navigationController;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [nav.presentingViewController dismissViewControllerAnimated:YES completion:nil];
@@ -124,7 +143,7 @@ static ModpackInstallViewController *gPickerOwner;
     }
     // no Modrinth icon for local packs: drop a stale icon from an earlier install
     [NSFileManager.defaultManager removeItemAtPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"] error:nil];
-    [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:self.modrinth userInfo:@{@"localPath": dest}];
+    [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:[ModrinthAPI new] userInfo:@{@"localPath": dest}];
 }
 
 - (void)loadSearchResultsWithPrevList:(BOOL)prevList {
@@ -136,13 +155,13 @@ static ModpackInstallViewController *gPickerOwner;
     [self switchToLoadingState];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         self.filters[@"name"] = name;
-        self.list = [self.modrinth searchModWithFilters:self.filters previousPageResult:prevList ? self.list : nil];
+        self.list = [self.api searchModWithFilters:self.filters previousPageResult:prevList ? self.list : nil];
         dispatch_async(dispatch_get_main_queue(), ^{
             if (self.list) {
                 [self switchToReadyState];
                 [self.tableView reloadData];
             } else {
-                showDialog(localize(@"Error", nil), self.modrinth.lastError.localizedDescription);
+                showDialog(localize(@"Error", nil), self.api.lastError.localizedDescription);
                 [self actionClose];
             }
         });
@@ -218,7 +237,7 @@ static ModpackInstallViewController *gPickerOwner;
     UIImage *fallbackImage = [UIImage imageNamed:@"DefaultProfile"];
     [cell.imageView setImageWithURL:[NSURL URLWithString:item[@"imageUrl"]] placeholderImage:fallbackImage];
 
-    if (!self.modrinth.reachedLastPage && indexPath.row == self.list.count-1) {
+    if (!self.api.reachedLastPage && indexPath.row == self.list.count-1) {
         [self loadSearchResultsWithPrevList:YES];
     }
 
@@ -243,7 +262,9 @@ static ModpackInstallViewController *gPickerOwner;
             [self actionClose];
             NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
                 [UIImagePNGRepresentation([cell.imageView.image _imageWithSize:CGSizeMake(40, 40)]) writeToFile:tmpIconPath atomically:YES];
-            [self.modrinth installModpackFromDetail:self.list[indexPath.row] atIndex:i];
+            NSString *reason = details[@"versionUnavailableReasons"][i];
+            if (reason.length) { showDialog(localize(@"Error", nil), reason); return; }
+            [self.api installModpackFromDetail:self.list[indexPath.row] atIndex:i];
         }]];
     }];
 
@@ -262,13 +283,13 @@ static ModpackInstallViewController *gPickerOwner;
     [tableView deselectRowAtIndexPath:indexPath animated:NO];
     [self switchToLoadingState];
 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        [self.modrinth loadDetailsOfMod:self.list[indexPath.row]];
+        [self.api loadDetailsOfMod:self.list[indexPath.row]];
         dispatch_async(dispatch_get_main_queue(), ^{
             [self switchToReadyState];
             if ([item[@"versionDetailsLoaded"] boolValue]) {
                 [self showDetails:item atIndexPath:indexPath];
             } else {
-                showDialog(localize(@"Error", nil), self.modrinth.lastError.localizedDescription);
+                showDialog(localize(@"Error", nil), self.api.lastError.localizedDescription);
             }
         });
     });

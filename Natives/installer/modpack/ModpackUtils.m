@@ -3,14 +3,35 @@
 
 @implementation ModpackUtils
 
++ (NSString *)safeDestinationForRelativePath:(NSString *)relativePath root:(NSString *)root error:(NSError **)error {
+    if (![relativePath isKindOfClass:NSString.class] || !relativePath.length || relativePath.isAbsolutePath) {
+        if (error) *error = [NSError errorWithDomain:@"Modpack" code:1 userInfo:@{NSLocalizedDescriptionKey: @"The modpack contains an invalid file path."}];
+        return nil;
+    }
+    for (NSString *component in relativePath.pathComponents) {
+        if ([component isEqual:@"."] || [component isEqual:@".."] || !component.length) {
+            if (error) *error = [NSError errorWithDomain:@"Modpack" code:1 userInfo:@{NSLocalizedDescriptionKey: @"The modpack contains an unsafe file path."}];
+            return nil;
+        }
+    }
+    NSString *destination = [root stringByAppendingPathComponent:relativePath];
+    NSString *standardRoot = root.stringByStandardizingPath;
+    if (![destination.stringByStandardizingPath hasPrefix:[standardRoot stringByAppendingString:@"/"]]) {
+        if (error) *error = [NSError errorWithDomain:@"Modpack" code:1 userInfo:@{NSLocalizedDescriptionKey: @"The modpack file path escapes its instance."}];
+        return nil;
+    }
+    return destination;
+}
+
 + (void)archive:(UZKArchive *)archive extractDirectory:(NSString *)dir toPath:(NSString *)path error:(NSError *__autoreleasing*)error {
     [archive performOnFilesInArchive:^(UZKFileInfo *fileInfo, BOOL *stop) {
-        if (![fileInfo.filename hasPrefix:dir] ||
-            fileInfo.filename.length <= dir.length) {
+        NSString *prefix = [dir stringByAppendingString:@"/"];
+        if (![fileInfo.filename hasPrefix:prefix] || fileInfo.filename.length <= prefix.length) {
             return;
         }
-        NSString *fileName = [fileInfo.filename substringFromIndex:dir.length+1];
-        NSString *destItemPath = [path stringByAppendingPathComponent:fileName];
+        NSString *fileName = [fileInfo.filename substringFromIndex:prefix.length];
+        NSString *destItemPath = [self safeDestinationForRelativePath:fileName root:path error:error];
+        if (!destItemPath) { *stop = YES; return; }
         NSString *destDirPath = fileInfo.isDirectory ? destItemPath : destItemPath.stringByDeletingLastPathComponent;
         BOOL createdDir = [NSFileManager.defaultManager createDirectoryAtPath:destDirPath
             withIntermediateDirectories:YES
