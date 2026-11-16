@@ -8,7 +8,7 @@
       "developerName": "CH33ZE (fork of AngelAuraMC)",
       "subtitle": "Minecraft Java for iPhone Duo",
       "localizedDescription": "Amethyst with iPhone Duo fold support: game on top and controls on the bottom when half folded, fullscreen when open.",
-      "iconURL": "https://raw.githubusercontent.com/CH33ZELOUIZ/Amethyst-iOS/duo-optimized/Natives/Assets.xcassets/AppLogo.imageset/AppLogo.png",
+      "iconURL": "https://raw.githubusercontent.com/CH33ZELOUIZ/Amethyst-iOS/duo-optimized/altstore/amethyst-duo.png",
       "tintColor": "7B3FE4",
       "versions": [
         {
@@ -35,7 +35,7 @@
       "tintColor": "197C89",
       "versions": [
         {
-          "version": "2.3.12-duo.1",
+          "version": "2.3.12",
           "date": "2026-11-16",
           "downloadURL": "https://github.com/CH33ZELOUIZ/AltStore/releases/download/altstore-duo-1/AltStore-Duo-unsigned.ipa",
           "size": 53878048,
