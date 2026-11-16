@@ -24,6 +24,29 @@
         "entitlements": [],
         "privacy": {}
       }
+    },
+    {
+      "name": "AltStore Duo",
+      "bundleIdentifier": "io.altstore.AltStore",
+      "developerName": "CH33ZE (fork of AltStore)",
+      "subtitle": "Duo-optimized app sideloading",
+      "localizedDescription": "AltStore optimized for iPhone Duo on iOS 27.1+. Uses the system fold division region to keep the app interface aware of the physical crease. Unsigned IPA: install through AltStore or SideStore.",
+      "iconURL": "https://raw.githubusercontent.com/CH33ZELOUIZ/Amethyst-iOS/duo-optimized/altstore/altstore-duo.png",
+      "tintColor": "197C89",
+      "versions": [
+        {
+          "version": "2.3.12-duo.1",
+          "date": "2026-11-16",
+          "downloadURL": "https://github.com/CH33ZELOUIZ/AltStore/releases/download/altstore-duo-1/AltStore-Duo-unsigned.ipa",
+          "size": 53878048,
+          "sha256": "3ca494fad21f3f9475858634d36c388c53a1ca3ec568cc6d63536eae1cc0189b",
+          "minOSVersion": "17.4"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {}
+      }
     }
   ],
   "news": [],
