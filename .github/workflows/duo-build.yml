@@ -50,7 +50,13 @@ jobs:
           cp "$IPA" "$NEW"
           SIZE=$(stat -f%z "$NEW")
           SHA=$(shasum -a 256 "$NEW" | cut -d' ' -f1)
-          gh release create "$TAG" "$NEW" --title "Amethyst Duo build $TAG" --notes "Fold-aware Amethyst for iPhone Duo. Unsigned IPA: sign with SideStore/AltStore." --target "${{ github.sha }}"
+          # A retry may use a tag whose release was created before a later source push failed.
+          # Preserve that release and replace only this run's deterministic asset.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$NEW" --clobber
+          else
+            gh release create "$TAG" "$NEW" --title "Amethyst Duo build $TAG" --notes "Fold-aware Amethyst for iPhone Duo. Unsigned IPA: sign with SideStore/AltStore." --target "${{ github.sha }}"
+          fi
           URL="https://github.com/${{ github.repository }}/releases/download/$TAG/$(basename $NEW)"
           VER="1.0.${{ github.run_number }}"
           DATE=$(date -u +%Y-%m-%d)
@@ -85,4 +91,16 @@ jobs:
           git config user.name github-actions; git config user.email actions@github.com
           git add altstore/source.json
           git commit -m "altstore: $TAG [skip ci]"
-          git push origin HEAD:duo-optimized
+          # Builds take long enough for another commit to commonly land. Rebase this
+          # source-only commit onto the live branch and retry without force-pushing.
+          for attempt in 1 2 3; do
+            git fetch origin duo-optimized
+            git rebase origin/duo-optimized
+            if git push origin HEAD:duo-optimized; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep "$attempt"
+          done
+          echo "Unable to publish altstore/source.json after concurrent branch updates." >&2
+          exit 1

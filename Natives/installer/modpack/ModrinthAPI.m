@@ -134,6 +134,10 @@
         [downloader finishDownloadWithErrorString:[NSString stringWithFormat:localize(@"content.modpack.error_open", nil), error.localizedDescription]];
         return;
     }
+    if (![ModpackUtils validateArchive:archive error:&error]) {
+        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"This Modrinth archive cannot be imported safely: %@", error.localizedDescription]];
+        return;
+    }
 
     NSData *indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&error];
     NSDictionary* indexDict = [NSJSONSerialization JSONObjectWithData:indexData options:kNilOptions error:&error];

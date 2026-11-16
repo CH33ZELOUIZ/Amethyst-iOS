@@ -1,6 +1,9 @@
 #import <Foundation/Foundation.h>
 #import "CurseForgeAPI.h"
 #import "ModrinthSearchFilters.h"
+#import "MinecraftResourceDownloadTask.h"
+#import "PLProfiles.h"
+#import "utils.h"
 #import <Security/Security.h>
 
 static NSString *CFString(id value) { return [value isKindOfClass:NSString.class] ? value : @""; }
@@ -210,5 +213,102 @@ static NSNumber *CFLoader(NSDictionary *filters) {
     item[@"versionSizes"] = sizes;
     item[@"versionUnavailableReasons"] = reasons;
     item[@"versionDetailsLoaded"] = @YES;
+}
+
+- (void)downloader:(MinecraftResourceDownloadTask *)downloader submitDownloadTasksFromPackage:(NSString *)packagePath toPath:(NSString *)destPath {
+    NSError *error;
+    UZKArchive *archive = [[UZKArchive alloc] initWithPath:packagePath error:&error];
+    if (error) {
+        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Unable to open the official CurseForge modpack archive: %@", error.localizedDescription]];
+        return;
+    }
+    if (![ModpackUtils validateArchive:archive error:&error]) {
+        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"This CurseForge archive cannot be imported safely: %@", error.localizedDescription]];
+        return;
+    }
+    NSData *manifestData = [archive extractDataFromFile:@"manifest.json" error:&error];
+    NSDictionary *manifest = manifestData ? [NSJSONSerialization JSONObjectWithData:manifestData options:0 error:&error] : nil;
+    if (error || ![manifest isKindOfClass:NSDictionary.class] || ![manifest[@"minecraft"] isKindOfClass:NSDictionary.class] || ![manifest[@"files"] isKindOfClass:NSArray.class]) {
+        [downloader finishDownloadWithErrorString:@"This archive is not an official CurseForge client modpack (manifest.json is missing or invalid)."];
+        return;
+    }
+    if ([[CFString(manifest[@"manifestType"]) lowercaseString] isEqual:@"minecraftmodpack"] == NO) {
+        [downloader finishDownloadWithErrorString:@"This CurseForge archive is not a client modpack and cannot be installed."];
+        return;
+    }
+    NSDictionary *minecraft = manifest[@"minecraft"];
+    NSString *minecraftVersion = CFString(minecraft[@"version"]);
+    if (!minecraftVersion.length || !CFString(manifest[@"name"]).length) {
+        [downloader finishDownloadWithErrorString:@"The CurseForge manifest does not declare a pack name and Minecraft version."];
+        return;
+    }
+
+    NSDictionary *dependency = @{ @"minecraft": minecraftVersion };
+    NSArray *loaders = [minecraft[@"modLoaders"] isKindOfClass:NSArray.class] ? minecraft[@"modLoaders"] : @[];
+    NSDictionary *primaryLoader = nil;
+    for (id candidate in loaders) {
+        if ([candidate isKindOfClass:NSDictionary.class] && [candidate[@"primary"] boolValue]) { primaryLoader = candidate; break; }
+        if (!primaryLoader && [candidate isKindOfClass:NSDictionary.class]) primaryLoader = candidate;
+    }
+    NSString *loaderID = CFString(primaryLoader[@"id"]).lowercaseString;
+    if ([loaderID hasPrefix:@"forge-"]) {
+        dependency = @{ @"minecraft": minecraftVersion, @"forge": [loaderID substringFromIndex:@"forge-".length] };
+    } else if ([loaderID hasPrefix:@"fabric-"]) {
+        dependency = @{ @"minecraft": minecraftVersion, @"fabric-loader": [loaderID substringFromIndex:@"fabric-".length] };
+    } else if ([loaderID hasPrefix:@"quilt-"]) {
+        dependency = @{ @"minecraft": minecraftVersion, @"quilt-loader": [loaderID substringFromIndex:@"quilt-".length] };
+    } else if ([loaderID hasPrefix:@"neoforge-"]) {
+        [downloader finishDownloadWithErrorString:@"This CurseForge pack requires NeoForge. NeoForge modpack profiles are not supported in this build; it was not installed as a potentially unlaunchable profile."];
+        return;
+    } else if (loaderID.length) {
+        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"This CurseForge pack uses unsupported loader '%@'.", loaderID]];
+        return;
+    }
+
+    NSMutableArray<NSDictionary *> *downloads = [NSMutableArray new];
+    for (id candidate in manifest[@"files"]) {
+        if (![candidate isKindOfClass:NSDictionary.class] || ![candidate[@"required"] boolValue] || ![candidate[@"projectID"] isKindOfClass:NSNumber.class] || ![candidate[@"fileID"] isKindOfClass:NSNumber.class]) {
+            if ([candidate isKindOfClass:NSDictionary.class] && ![candidate[@"required"] boolValue]) continue;
+            [downloader finishDownloadWithErrorString:@"The CurseForge manifest contains an invalid required file entry."];
+            return;
+        }
+        NSDictionary *file = [self versionForID:CFIdentifier(candidate[@"fileID"]) projectID:CFIdentifier(candidate[@"projectID"])];
+        NSDictionary *download = [file[@"files"] firstObject];
+        if (![file[@"project_id"] isEqual:CFIdentifier(candidate[@"projectID"])] || [file[@"downloadUnavailable"] boolValue] || !CFString(download[@"url"]).length || !CFString(download[@"filename"]).length || !CFString(download[@"hashes"][@"sha1"]).length) {
+            [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"CurseForge does not provide an authorized downloadable file for project %@ file %@. Download that file manually from CurseForge, then retry after placing it in this profile's mods folder.", CFIdentifier(candidate[@"projectID"]), CFIdentifier(candidate[@"fileID"])]];
+            return;
+        }
+        [downloads addObject:download];
+    }
+
+    downloader.progress.totalUnitCount = downloads.count;
+    for (NSDictionary *download in downloads) {
+        NSString *path = [ModpackUtils safeDestinationForRelativePath:[@"mods" stringByAppendingPathComponent:download[@"filename"]] root:destPath error:&error];
+        if (!path) {
+            [downloader finishDownloadWithErrorString:error.localizedDescription ?: @"The CurseForge manifest contains an unsafe mod filename."];
+            return;
+        }
+        NSURLSessionDownloadTask *task = [downloader createDownloadTask:download[@"url"] size:[download[@"size"] unsignedLongLongValue] sha:download[@"hashes"][@"sha1"] altName:nil toPath:path];
+        if (task) [task resume];
+        else if (!downloader.progress.cancelled) downloader.progress.completedUnitCount++;
+        else if (downloader.progress.cancelled) return;
+    }
+    [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&error];
+    if (error) {
+        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Unable to extract CurseForge overrides safely: %@", error.localizedDescription]];
+        return;
+    }
+    [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
+
+    NSDictionary *depInfo = [ModpackUtils infoForDependencies:dependency];
+    if (depInfo[@"json"]) {
+        NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("GAME_DIR"), depInfo[@"id"]];
+        [[downloader createDownloadTask:depInfo[@"json"] size:0 sha:nil altName:nil toPath:jsonPath] resume];
+    }
+    NSString *profileID = depInfo[@"id"] ?: minecraftVersion;
+    NSString *packName = CFString(manifest[@"name"]);
+    PLProfiles *profiles = PLProfiles.current;
+    profiles.profiles[packName] = @{@"gameDir": [NSString stringWithFormat:@"./custom_gamedir/%@", destPath.lastPathComponent], @"name": packName, @"lastVersionId": profileID, @"icon": @""}.mutableCopy;
+    profiles.selectedProfileName = packName;
 }
 @end

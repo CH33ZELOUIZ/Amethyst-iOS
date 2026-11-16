@@ -3,6 +3,58 @@
 
 @implementation ModpackUtils
 
++ (BOOL)fail:(NSError **)error description:(NSString *)description {
+    if (error) *error = [NSError errorWithDomain:@"Modpack" code:1 userInfo:@{NSLocalizedDescriptionKey: description}];
+    return NO;
+}
+
++ (BOOL)validateArchive:(UZKArchive *)archive error:(NSError **)error {
+    __block NSUInteger entryCount = 0;
+    __block unsigned long long expandedSize = 0;
+    __block BOOL valid = YES;
+    [archive performOnFilesInArchive:^(UZKFileInfo *fileInfo, BOOL *stop) {
+        entryCount++;
+        // This permits the 9,234-entry Integrated Boogaloo archive while bounding extraction.
+        if (entryCount > 10000 || fileInfo.uncompressedSize > 256ULL * 1024 * 1024 || expandedSize > 1024ULL * 1024 * 1024 - fileInfo.uncompressedSize) {
+            valid = [self fail:error description:@"The modpack archive is too large to import safely."];
+            *stop = YES;
+            return;
+        }
+        expandedSize += fileInfo.uncompressedSize;
+        NSString *name = fileInfo.filename;
+        if (![name isKindOfClass:NSString.class] || !name.length || name.isAbsolutePath || [name containsString:@"\\"] || (fileInfo.posixPermissions & 0170000) == 0120000) {
+            valid = [self fail:error description:@"The modpack archive contains an unsafe path or symbolic link."];
+            *stop = YES;
+            return;
+        }
+        for (NSString *component in name.pathComponents) {
+            if ([component isEqual:@"."] || [component isEqual:@".."] || !component.length) {
+                valid = [self fail:error description:@"The modpack archive contains an unsafe file path."];
+                *stop = YES;
+                return;
+            }
+        }
+    } error:error];
+    return valid && (!error || !*error);
+}
+
++ (NSString *)packFormatForArchiveAtPath:(NSString *)path error:(NSError **)error {
+    UZKArchive *archive = [[UZKArchive alloc] initWithPath:path error:error];
+    if (!archive || ![self validateArchive:archive error:error]) return nil;
+    NSError *manifestError = nil, *modrinthError = nil;
+    NSData *manifestData = [archive extractDataFromFile:@"manifest.json" error:&manifestError];
+    NSData *indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&modrinthError];
+    NSDictionary *manifest = manifestData ? [NSJSONSerialization JSONObjectWithData:manifestData options:0 error:&manifestError] : nil;
+    NSDictionary *index = indexData ? [NSJSONSerialization JSONObjectWithData:indexData options:0 error:&modrinthError] : nil;
+    BOOL curseForge = [manifest isKindOfClass:NSDictionary.class] && [[manifest[@"manifestType"] lowercaseString] isEqualToString:@"minecraftmodpack"] && [manifest[@"minecraft"] isKindOfClass:NSDictionary.class] && [manifest[@"files"] isKindOfClass:NSArray.class];
+    BOOL modrinth = [index isKindOfClass:NSDictionary.class] && [index[@"formatVersion"] respondsToSelector:@selector(integerValue)] && [index[@"files"] isKindOfClass:NSArray.class] && [index[@"dependencies"] isKindOfClass:NSDictionary.class];
+    if (curseForge == modrinth) {
+        [self fail:error description:curseForge ? @"The archive contains conflicting modpack manifests." : @"This archive is not a supported Modrinth .mrpack or official CurseForge client modpack ZIP."];
+        return nil;
+    }
+    return curseForge ? @"curseforge" : @"modrinth";
+}
+
 + (NSString *)safeDestinationForRelativePath:(NSString *)relativePath root:(NSString *)root error:(NSError **)error {
     if (![relativePath isKindOfClass:NSString.class] || !relativePath.length || relativePath.isAbsolutePath) {
         if (error) *error = [NSError errorWithDomain:@"Modpack" code:1 userInfo:@{NSLocalizedDescriptionKey: @"The modpack contains an invalid file path."}];
@@ -24,6 +76,7 @@
 }
 
 + (void)archive:(UZKArchive *)archive extractDirectory:(NSString *)dir toPath:(NSString *)path error:(NSError *__autoreleasing*)error {
+    if (![self validateArchive:archive error:error]) return;
     [archive performOnFilesInArchive:^(UZKFileInfo *fileInfo, BOOL *stop) {
         NSString *prefix = [dir stringByAppendingString:@"/"];
         if (![fileInfo.filename hasPrefix:prefix] || fileInfo.filename.length <= prefix.length) {

@@ -54,7 +54,7 @@ static ModpackInstallViewController *gPickerOwner;
         @"name": @""
         // mcVersion
     }.mutableCopy;
-    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Import .mrpack" style:UIBarButtonItemStylePlain target:self action:@selector(actionImportMrpack)];
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Import Pack" style:UIBarButtonItemStylePlain target:self action:@selector(actionImportMrpack)];
     self.providerToggle = [[UISegmentedControl alloc] initWithItems:@[@"Modrinth", @"CurseForge"]];
     self.providerToggle.selectedSegmentIndex = 0;
     [self.providerToggle setEnabled:[CurseForgeAPI isConfigured] forSegmentAtIndex:1];
@@ -64,12 +64,12 @@ static ModpackInstallViewController *gPickerOwner;
     [self updateSearchResults];
 }
 
-- (NSArray<NSString *> *)localMrpackFiles {
+- (NSArray<NSString *> *)localPackFiles {
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     NSMutableArray *found = [NSMutableArray new];
     for (NSString *dir in @[docs, [docs stringByAppendingPathComponent:@"modpacks"]]) {
         for (NSString *f in [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil]) {
-            if ([f.pathExtension.lowercaseString isEqualToString:@"mrpack"]) {
+            if ([f.pathExtension.lowercaseString isEqualToString:@"mrpack"] || [f.pathExtension.lowercaseString isEqualToString:@"zip"]) {
                 [found addObject:[dir stringByAppendingPathComponent:f]];
             }
         }
@@ -87,8 +87,16 @@ static ModpackInstallViewController *gPickerOwner;
         return;
     }
     [NSFileManager.defaultManager removeItemAtPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"] error:nil];
-    NSLog(@"[ModpackImport] Installing local modpack %@", dest);
-    [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:[ModrinthAPI new] userInfo:@{@"localPath": dest}];
+    NSError *formatError = nil;
+    NSString *format = [ModpackUtils packFormatForArchiveAtPath:dest error:&formatError];
+    if (!format) {
+        [NSFileManager.defaultManager removeItemAtPath:dest error:nil];
+        showDialog(localize(@"Error", nil), formatError.localizedDescription);
+        return;
+    }
+    NSLog(@"[ModpackImport] Installing local %@ modpack %@", format, dest);
+    ModpackAPI *api = [format isEqualToString:@"curseforge"] ? [CurseForgeAPI new] : [ModrinthAPI new];
+    [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:api userInfo:@{@"localPath": dest}];
     UINavigationController *nav = self.navigationController;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [nav.presentingViewController dismissViewControllerAnimated:YES completion:nil];
@@ -96,9 +104,9 @@ static ModpackInstallViewController *gPickerOwner;
 }
 
 - (void)actionImportMrpack {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Import .mrpack"
-        message:@"Files in On My iPhone > Amethyst are listed here." preferredStyle:UIAlertControllerStyleActionSheet];
-    for (NSString *path in [self localMrpackFiles]) {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Import Modpack"
+        message:@"Choose a Modrinth .mrpack or official CurseForge client modpack ZIP. Generic ZIP archives are rejected." preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSString *path in [self localPackFiles]) {
         [sheet addAction:[UIAlertAction actionWithTitle:path.lastPathComponent style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
             [self importLocalMrpackAtPath:path];
         }]];
@@ -130,7 +138,7 @@ static ModpackInstallViewController *gPickerOwner;
     if (!url) return;
     NSString *ext = url.pathExtension.lowercaseString;
     if (![ext isEqualToString:@"mrpack"] && ![ext isEqualToString:@"zip"]) {
-        showDialog(localize(@"Error", nil), @"Please pick a Modrinth modpack file (.mrpack).");
+        showDialog(localize(@"Error", nil), @"Please pick a Modrinth .mrpack or official CurseForge client modpack ZIP.");
         return;
     }
     NSString *dest = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"import-" stringByAppendingString:url.lastPathComponent]];
@@ -141,9 +149,17 @@ static ModpackInstallViewController *gPickerOwner;
         showDialog(localize(@"Error", nil), error.localizedDescription);
         return;
     }
-    // no Modrinth icon for local packs: drop a stale icon from an earlier install
+    // Local imports do not carry the remote browser icon; drop stale state first.
     [NSFileManager.defaultManager removeItemAtPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"] error:nil];
-    [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:[ModrinthAPI new] userInfo:@{@"localPath": dest}];
+    NSError *formatError = nil;
+    NSString *format = [ModpackUtils packFormatForArchiveAtPath:dest error:&formatError];
+    if (!format) {
+        [NSFileManager.defaultManager removeItemAtPath:dest error:nil];
+        showDialog(localize(@"Error", nil), formatError.localizedDescription);
+        return;
+    }
+    ModpackAPI *api = [format isEqualToString:@"curseforge"] ? [CurseForgeAPI new] : [ModrinthAPI new];
+    [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:api userInfo:@{@"localPath": dest}];
 }
 
 - (void)loadSearchResultsWithPrevList:(BOOL)prevList {
