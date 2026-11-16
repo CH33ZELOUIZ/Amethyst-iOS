@@ -205,6 +205,8 @@
 		<integer>2</integer>
 		<integer>3</integer>
 	</array>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Amethyst saves screenshots you choose to your photo library.</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

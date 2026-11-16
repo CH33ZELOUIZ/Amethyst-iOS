@@ -10,6 +10,8 @@
 #import "LauncherPreferencesViewController.h"
 #import "LauncherProfilesViewController.h"
 #import "installer/ModrinthModsViewController.h"
+#import "installer/ModpackInstallViewController.h"
+#import "tools/AMTools.h"
 #import "PLProfiles.h"
 #import "UIButton+AFNetworking.h"
 #import "UIImageView+AFNetworking.h"
@@ -69,7 +71,17 @@
         [LauncherMenuCustomItem vcClass:ModrinthModsViewController.class],
         [LauncherMenuCustomItem vcClass:LauncherResourcePacksViewController.class],
         [LauncherMenuCustomItem vcClass:LauncherShaderPacksViewController.class],
+        [LauncherMenuCustomItem vcClass:AMWorldsViewController.class],
+        [LauncherMenuCustomItem vcClass:AMScreenshotsViewController.class],
+        [LauncherMenuCustomItem vcClass:AMFilesHubViewController.class],
     ].mutableCopy;
+    [self.options addObject:(id)[LauncherMenuCustomItem
+                                 title:@"Modpacks"
+                                 imageName:@"shippingbox" action:^{
+        ModpackInstallViewController *mp = [ModpackInstallViewController new];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:mp];
+        [self presentViewController:nav animated:YES completion:nil];
+    }]];
     if (realUIIdiom != UIUserInterfaceIdiomTV) {
         [self.options addObject:(id)[LauncherMenuCustomItem
                                      title:localize(@"launcher.menu.custom_controls", nil)
