@@ -1099,9 +1099,8 @@ static BOOL gClipMove;
     self.collectionView.backgroundColor = UIColor.systemBackgroundColor;
     [self.collectionView registerClass:AMScreenshotCell.class forCellWithReuseIdentifier:@"s"];
     self.collectionView.alwaysBounceVertical = YES;
-    self.refreshControl = [UIRefreshControl new];
-    [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
-    self.collectionView.refreshControl = self.refreshControl;
+    self.collectionView.refreshControl = [UIRefreshControl new];
+    [self.collectionView.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -1120,7 +1119,7 @@ static BOOL gClipMove;
     }];
     self.files = fs;
     [self.collectionView reloadData];
-    [self.refreshControl endRefreshing];
+    [self.collectionView.refreshControl endRefreshing];
     self.navigationItem.prompt = fs.count ? nil : @"No screenshots yet. Press F2 in game, or use the screenshot control.";
 }
 
