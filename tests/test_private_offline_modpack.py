@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Regression checks for the source-only private offline-pack importer."""
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import zipfile
 
@@ -39,30 +42,77 @@ def test_import_ui_keeps_generic_curseforge_distinct_and_warns_about_phone_ram()
     assert "OfflineModpackImporter importPackAtPath:filePath downloader:self" in task
 
 
+def load_packager():
+    script = ROOT / "tools/package-private-offline-modpack.py"
+    spec = importlib.util.spec_from_file_location("private_offline_packager", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def package(script, source, output):
+    return subprocess.run(
+        [sys.executable, str(script), str(source), str(output), "--profile-name", "integrated_boogaloo"],
+        text=True, capture_output=True, check=False,
+    )
+
+
 def test_packaging_tool_creates_a_checksum_bound_zip_without_repo_payload():
     script = ROOT / "tools/package-private-offline-modpack.py"
     script_text = script.read_text()
-    assert "zipfile.ZipFile" in script_text
-    assert "SHA256SUMS.txt" in script_text
-    assert "duo-offline-pack.json" in script_text
+    assert "ZIP_STORED" in script_text
+    assert "validate_archive(temporary)" in script_text
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary) / "input"
         root.mkdir()
         (root / "mods").mkdir()
         payload = root / "mods" / "example.jar"
         payload.write_bytes(b"synthetic-only")
-        records = [(hashlib.sha256(payload.read_bytes()).hexdigest(), "mods/example.jar", payload.stat().st_size, payload)]
-        sums = "".join(f"{sha}  {relative}\n" for sha, relative, _, _ in records).encode()
-        control = {"format": "amethyst-duo-offline-pack", "formatVersion": 1, "fileCount": 1, "payloadBytes": len(b"synthetic-only"), "sha256sumsSHA256": hashlib.sha256(sums).hexdigest()}
         archive_path = Path(temporary) / "private.duo-pack.zip"
-        with zipfile.ZipFile(archive_path, "w") as archive:
-            archive.writestr("duo-offline-pack.json", json.dumps(control))
-            archive.writestr("SHA256SUMS.txt", sums)
-            archive.write(payload, "mods/example.jar")
+        result = package(script, root, archive_path)
+        assert result.returncode == 0, result.stderr
+        packager = load_packager()
+        packager.validate_archive(archive_path)
         with zipfile.ZipFile(archive_path) as archive:
+            control = json.loads(archive.read("duo-offline-pack.json"))
             assert set(archive.namelist()) == {"duo-offline-pack.json", "SHA256SUMS.txt", "mods/example.jar"}
             assert hashlib.sha256(archive.read("SHA256SUMS.txt")).hexdigest() == control["sha256sumsSHA256"]
             assert archive.read("mods/example.jar") == b"synthetic-only"
+
+
+def test_packager_repetitive_two_mib_payload_is_importer_preflight_compatible():
+    script = ROOT / "tools/package-private-offline-modpack.py"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary) / "input"
+        payload = root / "mods" / "repetitive.jar"
+        payload.parent.mkdir(parents=True)
+        payload.write_bytes(b"A" * (2 * 1024 * 1024))
+        archive_path = Path(temporary) / "private.duo-pack.zip"
+        result = package(script, root, archive_path)
+        assert result.returncode == 0, result.stderr
+        packager = load_packager()
+        packager.validate_archive(archive_path)
+        with zipfile.ZipFile(archive_path) as archive:
+            info = archive.getinfo("mods/repetitive.jar")
+            assert info.compress_size == info.file_size
+            assert info.file_size // info.compress_size <= packager.MAX_COMPRESSION_RATIO
+
+
+def test_packager_rejects_control_values_the_importer_would_reject():
+    script = ROOT / "tools/package-private-offline-modpack.py"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary) / "input"
+        root.mkdir()
+        (root / "example.jar").write_bytes(b"synthetic-only")
+        archive_path = Path(temporary) / "private.duo-pack.zip"
+        result = subprocess.run(
+            [sys.executable, str(script), str(root), str(archive_path), "--profile-name", "unsafe/profile"],
+            text=True, capture_output=True, check=False,
+        )
+        assert result.returncode != 0
+        assert "importer-compatible" in result.stderr
+        assert not archive_path.exists()
 
 
 def test_importer_rejects_adversarial_archive_layouts_before_payload_extraction():
