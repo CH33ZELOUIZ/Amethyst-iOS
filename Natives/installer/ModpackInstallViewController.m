@@ -7,6 +7,7 @@
 #import "modpack/ModrinthAPI.h"
 #import "modpack/CurseForgeAPI.h"
 #import "modpack/OfflineModpackImporter.h"
+#import "LauncherPreferences.h"
 #import "config.h"
 #import "ios_uikit_bridge.h"
 #import "utils.h"
