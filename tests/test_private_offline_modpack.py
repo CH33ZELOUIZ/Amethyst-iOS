@@ -33,7 +33,8 @@ def test_offline_importer_is_private_integrity_checked_and_atomic():
     assert "OfflineNeoForge211264InstallerSHA256" in importer
     assert "preflightZipAtPath" in importer
     assert "validateDestinationCollisions" in importer
-    assert "[profiles save:&error]" in importer
+    # Profile state is owned by the main queue and retains its own error while the worker publishes.
+    assert "[profiles save:&profileError]" in importer
 
 
 def test_import_ui_keeps_generic_curseforge_distinct_and_warns_about_phone_ram():

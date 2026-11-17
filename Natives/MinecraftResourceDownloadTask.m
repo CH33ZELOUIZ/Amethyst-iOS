@@ -13,6 +13,7 @@
 
 @interface MinecraftResourceDownloadTask ()
 @property AFURLSessionManager* manager;
+@property(nonatomic) BOOL terminal;
 @end
 
 @implementation MinecraftResourceDownloadTask
@@ -350,6 +351,15 @@
 }
 
 - (void)finishDownloadWithSuccess {
+    @synchronized (self) {
+        if (self.terminal) return;
+        if (self.progress.cancelled) {
+            // A worker can finish just after the user presses Cancel; cancellation wins.
+            self.terminal = YES;
+            return;
+        }
+        self.terminal = YES;
+    }
     // Success is signaled by the overall NSProgress finishing; the launcher UI
     // observes progress.finished to dismiss the download popover and reload profiles.
     if (self.progress.totalUnitCount < 1) {
@@ -358,7 +368,15 @@
     self.progress.completedUnitCount = self.progress.totalUnitCount;
 }
 
+- (void)cancel {
+    [self finishDownloadWithErrorString:@"Private pack import was cancelled."];
+}
+
 - (void)finishDownloadWithErrorString:(NSString *)error {
+    @synchronized (self) {
+        if (self.terminal) return;
+        self.terminal = YES;
+    }
     NSLog(@"[ModpackImport] Failed: %@", error);
     [self.progress cancel];
     [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];

@@ -12,6 +12,7 @@
 @property(nonatomic) NSMutableDictionary<NSString *, NSNumber *> *sizes; // profile name -> bytes, filled off-main
 @property(nonatomic) BOOL loaded;
 @property(nonatomic) UILabel *emptyLabel;
+@property(nonatomic) NSUInteger reloadGeneration;
 @end
 
 @implementation DuoPacksViewController
@@ -49,6 +50,9 @@
 
 - (void)reload {
     // Profile list is a small JSON dictionary; folder sizing is the expensive part and runs in the background.
+    self.reloadGeneration++;
+    NSUInteger generation = self.reloadGeneration;
+    self.sizes = [NSMutableDictionary new];
     self.packs = [DuoPackLibrary installedPacks];
     self.loaded = YES;
     self.tableView.backgroundView = self.packs.count ? nil : self.emptyLabel;
@@ -59,6 +63,7 @@
         for (DuoPackInfo *pack in snapshot) {
             unsigned long long bytes = [DuoPackLibrary storageBytesForPack:pack];
             dispatch_async(dispatch_get_main_queue(), ^{
+                if (generation != self.reloadGeneration) return;
                 self.sizes[pack.profileName] = @(bytes);
                 NSUInteger row = [self.packs indexOfObjectPassingTest:^BOOL(DuoPackInfo *p, NSUInteger i, BOOL *stop) { return [p.profileName isEqualToString:pack.profileName]; }];
                 if (row != NSNotFound && self.tableView.window) {
@@ -160,6 +165,16 @@
     }];
     select.enabled = pack.directoryExists;
     [sheet addAction:select];
+    UIAlertAction *launch = [UIAlertAction actionWithTitle:localize(@"duo.packs.action.launch", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        PLProfiles.current.selectedProfileName = pack.profileName;
+        LauncherNavigationController *launcher = (LauncherNavigationController *)self.splitViewController.viewControllers.lastObject;
+        [launcher reloadProfileList];
+        [self reload];
+        // Let the action sheet dismiss before presenting account/JIT/download UI.
+        dispatch_async(dispatch_get_main_queue(), ^{ [launcher launchMinecraft:nil]; });
+    }];
+    launch.enabled = pack.directoryExists;
+    [sheet addAction:launch];
     UIAlertAction *files = [UIAlertAction actionWithTitle:localize(@"duo.packs.action.files", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
         [self.navigationController pushViewController:[[AMFileBrowserViewController alloc] initWithPath:pack.absoluteGameDir] animated:YES];
     }];
@@ -175,17 +190,32 @@
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"preference.title.confirm", nil) message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"Remove", nil) style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) {
-        if (![DuoPackLibrary canRemoveAnyPack]) {
-            showDialog(localize(@"Error", nil), localize(@"duo.packs.remove.last", nil));
+        NSError *validationError = nil;
+        if (![DuoPackLibrary canRemovePackProfile:pack error:&validationError]) {
+            showDialog(localize(@"Error", nil), validationError.localizedDescription);
             return;
         }
-        // Deleting a large pack folder must not block the UI; the profile is only dropped after the data is gone.
+        // The main-thread validation above establishes ownership before the atomic same-volume
+        // quarantine. Profile persistence validates again because UI actions can race each other.
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             NSError *error = nil;
-            BOOL deleted = [DuoPackLibrary removePackFolder:pack error:&error];
+            NSString *quarantine = [DuoPackLibrary quarantinePackFolder:pack error:&error];
             dispatch_async(dispatch_get_main_queue(), ^{
-                BOOL ok = deleted && [DuoPackLibrary removePackProfile:pack error:&error];
-                if (!ok) showDialog(localize(@"Error", nil), error.localizedDescription);
+                BOOL ok = quarantine && [DuoPackLibrary removePackProfile:pack error:&error];
+                if (!ok) {
+                    NSError *restoreError = nil;
+                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                        if (quarantine && ![DuoPackLibrary restoreQuarantinedPackFolder:quarantine forPack:pack error:&restoreError]) {
+                            dispatch_async(dispatch_get_main_queue(), ^{ showDialog(localize(@"Error", nil), restoreError.localizedDescription); });
+                        }
+                    });
+                    showDialog(localize(@"Error", nil), error.localizedDescription);
+                } else {
+                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                        NSError *deleteError = nil;
+                        if (![DuoPackLibrary deleteQuarantinedPackFolder:quarantine error:&deleteError]) NSLog(@"[DuoPacks] quarantined folder cleanup failed: %@", deleteError);
+                    });
+                }
                 [(LauncherNavigationController *)self.splitViewController.viewControllers.lastObject performSelector:@selector(reloadProfileList)];
                 [self reload];
             });

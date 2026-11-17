@@ -518,6 +518,7 @@
 "duo.packs.state.broken" = "Broken: pack folder is missing. Remove it or re-import.";
 "duo.packs.action.select" = "Select for Play";
 "duo.packs.action.files" = "Open folder in Files";
+"duo.packs.action.launch" = "Play this pack";
 "duo.packs.action.remove" = "Remove pack…";
 "duo.packs.selected.title" = "Pack selected";
 "duo.packs.selected.message" = "Open the Profiles tab and press Play to launch it.";

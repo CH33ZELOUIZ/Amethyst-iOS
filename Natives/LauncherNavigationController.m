@@ -523,7 +523,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     // Cancel stops the polling loop and returns the UI to a usable state instead of trapping the user.
     __block BOOL waitCancelled = NO;
     UIAlertAction *cancel = [UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
-        waitCancelled = YES;
+        @synchronized (self) { waitCancelled = YES; }
         self.progressText.text = localize(@"duo.jit.cancelled", nil);
         [self setInteractionEnabled:YES forDownloading:NO];
     }];
@@ -532,12 +532,12 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         while (!isJITEnabled(false)) {
-            if (waitCancelled) return;
+            @synchronized (self) { if (waitCancelled) return; }
             // Perform check for every 200ms
             usleep(1000*200);
         }
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (waitCancelled) return;
+            @synchronized (self) { if (waitCancelled) return; }
             [alert dismissViewControllerAnimated:YES completion:handler];
         });
     });

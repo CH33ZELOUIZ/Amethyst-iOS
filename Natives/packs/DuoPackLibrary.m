@@ -97,15 +97,54 @@ static NSString *const kLastImportKey = @"duo.packs.lastImport";
     return PLProfiles.current.profiles.count > 1;
 }
 
-+ (BOOL)removePackFolder:(DuoPackInfo *)pack error:(NSError **)error {
-    // Safe off the main thread: touches only the filesystem, never PLProfiles.
++ (BOOL)canRemovePackProfile:(DuoPackInfo *)pack error:(NSError **)error {
+    // Main thread only: validate the profile snapshot before any filesystem mutation.
+    PLProfiles *profiles = PLProfiles.current;
+    NSMutableDictionary *profile = profiles.profiles[pack.profileName];
+    if (!profile || ![profile[@"gameDir"] isEqualToString:pack.relativeGameDir]) {
+        if (error) *error = [NSError errorWithDomain:@"DuoPackLibrary" code:6 userInfo:@{NSLocalizedDescriptionKey: @"The profile changed while this pack was being removed. Refresh and try again."}];
+        return NO;
+    }
+    if (profiles.profiles.count <= 1) {
+        if (error) *error = [NSError errorWithDomain:@"DuoPackLibrary" code:2 userInfo:@{NSLocalizedDescriptionKey: @"The last remaining profile cannot be removed."}];
+        return NO;
+    }
+    return YES;
+}
+
++ (NSString *)quarantinePackFolder:(DuoPackInfo *)pack error:(NSError **)error {
+    // Safe off-main: rename within custom_gamedir is atomic and stays on the same volume.
     NSString *directory = [self safeAbsoluteDirForRelative:pack.relativeGameDir];
     if (!directory) {
         if (error) *error = [NSError errorWithDomain:@"DuoPackLibrary" code:1 userInfo:@{NSLocalizedDescriptionKey: @"This profile does not own a removable pack folder."}];
+        return nil;
+    }
+    BOOL isDirectory = NO;
+    if (![NSFileManager.defaultManager fileExistsAtPath:directory isDirectory:&isDirectory] || !isDirectory) {
+        if (error) *error = [NSError errorWithDomain:@"DuoPackLibrary" code:3 userInfo:@{NSLocalizedDescriptionKey: @"The pack folder is no longer available."}];
+        return nil;
+    }
+    NSString *quarantine = [[directory.stringByDeletingLastPathComponent stringByAppendingPathComponent:[NSString stringWithFormat:@".duo-removing-%@", NSUUID.UUID.UUIDString]] stringByStandardizingPath];
+    if (![NSFileManager.defaultManager moveItemAtPath:directory toPath:quarantine error:error]) return nil;
+    return quarantine;
+}
+
++ (BOOL)restoreQuarantinedPackFolder:(NSString *)quarantine forPack:(DuoPackInfo *)pack error:(NSError **)error {
+    NSString *directory = [self safeAbsoluteDirForRelative:pack.relativeGameDir];
+    if (!directory || ![quarantine.stringByDeletingLastPathComponent isEqualToString:directory.stringByDeletingLastPathComponent]) {
+        if (error) *error = [NSError errorWithDomain:@"DuoPackLibrary" code:4 userInfo:@{NSLocalizedDescriptionKey: @"The quarantined pack folder is invalid."}];
         return NO;
     }
-    if (![NSFileManager.defaultManager fileExistsAtPath:directory]) return YES;
-    return [NSFileManager.defaultManager removeItemAtPath:directory error:error];
+    return [NSFileManager.defaultManager moveItemAtPath:quarantine toPath:directory error:error];
+}
+
++ (BOOL)deleteQuarantinedPackFolder:(NSString *)quarantine error:(NSError **)error {
+    NSString *root = [self customGameDirRoot];
+    if (!root || ![quarantine.stringByDeletingLastPathComponent isEqualToString:root] || ![quarantine.lastPathComponent hasPrefix:@".duo-removing-"]) {
+        if (error) *error = [NSError errorWithDomain:@"DuoPackLibrary" code:5 userInfo:@{NSLocalizedDescriptionKey: @"The quarantined pack folder is invalid."}];
+        return NO;
+    }
+    return [NSFileManager.defaultManager removeItemAtPath:quarantine error:error];
 }
 
 + (BOOL)removePackProfile:(DuoPackInfo *)pack error:(NSError **)error {
@@ -113,11 +152,7 @@ static NSString *const kLastImportKey = @"duo.packs.lastImport";
     PLProfiles *profiles = PLProfiles.current;
     NSMutableDictionary *previous = profiles.profiles[pack.profileName];
     NSString *previousSelection = profiles.selectedProfileName;
-    if (!previous) return YES;
-    if (profiles.profiles.count <= 1) {
-        if (error) *error = [NSError errorWithDomain:@"DuoPackLibrary" code:2 userInfo:@{NSLocalizedDescriptionKey: @"The last remaining profile cannot be removed."}];
-        return NO;
-    }
+    if (![self canRemovePackProfile:pack error:error]) return NO;
     [profiles.profiles removeObjectForKey:pack.profileName];
     if ([previousSelection isEqualToString:pack.profileName]) {
         NSArray *remaining = [profiles.profiles.allKeys sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)];

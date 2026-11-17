@@ -91,8 +91,7 @@ static ModpackInstallViewController *gPickerOwner;
     unsigned long long desktopRecommended = [requirements[@"desktopRecommendedRamMiB"] unsignedLongLongValue];
     NSString *message = [NSString stringWithFormat:localize(@"duo.offline.confirm.message", nil), minimum, desktopRecommended, physical, allocated];
     if (!requirements || physical < minimum || allocated < minimum) {
-        // Keep the user's picked copy out of Documents but do not silently destroy anything else; explain how to fix it.
-        [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+        // Keep the selected archive available so the user can adjust RAM and retry.
         showDialog(localize(@"duo.offline.blocked.title", nil), [message stringByAppendingString:localize(@"duo.offline.blocked.hint", nil)]);
         return;
     }

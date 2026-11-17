@@ -116,7 +116,7 @@
 }
 
 - (void)actionCancel {
-    [self.task.progress cancel];
+    [self.task cancel];
     self.cancelButton.enabled = NO;
     self.phaseLabel.text = localize(@"duo.import.cancelling", nil);
 }

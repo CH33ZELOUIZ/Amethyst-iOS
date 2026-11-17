@@ -44,7 +44,7 @@ def test_import_sheet_after_observer_before_background_work():
     assert b.index("attachProgressObserverForTask:task") < b.index("presentImportSheetForTask") < b.index("dispatch_get_global_queue")
     assert "isMainThread" in body(text, "- (void)presentImportSheetForTask:")
     sheet = src("Natives/packs/DuoImportProgressViewController.m")
-    assert "actionHide" in sheet and "progress cancel" in sheet and "NSTimer" in sheet and "invalidate" in sheet
+    assert "actionHide" in sheet and "[self.task cancel]" in sheet and "NSTimer" in sheet and "invalidate" in sheet
 
 
 def test_error_and_success_paths_dismiss_sheet_and_persist_result():
@@ -66,6 +66,17 @@ def test_pack_marker_written_by_all_importers_and_listed():
     assert "duoPackSource" in lib and "./custom_gamedir/" in lib and "caseInsensitiveCompare" in lib
 
 
+def test_offline_profile_mutation_is_main_thread_owned_and_extraction_checks_cancel():
+    importer = src("Natives/installer/modpack/OfflineModpackImporter.m")
+    publish = body(importer, "+ (void)publishStaging:")
+    assert "dispatch_sync(dispatch_get_main_queue()" in publish
+    assert "profileAlreadyExists" in publish and "profileSaved" in publish
+    extract = body(importer, "+ (BOOL)extractArchive:")
+    assert "progress.cancelled" in extract
+    import_body = body(importer, "+ (void)importPackAtPath:")
+    assert import_body.count("downloader.progress.cancelled") >= 3
+
+
 def test_pack_removal_is_path_confined_and_io_off_main():
     lib = src("Natives/packs/DuoPackLibrary.m")
     safe = body(lib, "+ (NSString *)safeAbsoluteDirForRelative:")
@@ -73,10 +84,11 @@ def test_pack_removal_is_path_confined_and_io_off_main():
         assert guard in safe, guard
     vc = src("Natives/packs/DuoPacksViewController.m")
     remove = body(vc, "- (void)confirmRemove:")
-    assert remove.index("dispatch_get_global_queue") < remove.index("removePackFolder") < remove.index("dispatch_get_main_queue") < remove.index("removePackProfile")
-    assert "canRemoveAnyPack" in remove
+    assert remove.index("dispatch_get_global_queue") < remove.index("quarantinePackFolder") < remove.index("dispatch_get_main_queue") < remove.index("removePackProfile")
+    assert "canRemovePackProfile" in remove
+    assert "restoreQuarantinedPackFolder" in remove and "deleteQuarantinedPackFolder" in remove
     reload = body(vc, "- (void)reload")
-    assert "dispatch_get_global_queue" in reload and "storageBytesForPack" in reload
+    assert "dispatch_get_global_queue" in reload and "storageBytesForPack" in reload and "reloadGeneration" in reload
 
 
 def test_profile_order_deterministic():
@@ -90,6 +102,20 @@ def test_defects_d1_d4_fixed():
     nav = src("Natives/LauncherNavigationController.m")
     jit = nav[nav.index("launcher.wait_jit.title"):]
     assert "waitCancelled" in jit and "UIAlertActionStyleCancel" in jit
+    assert jit.count("@synchronized (self)") >= 3
+
+
+def test_cancel_finalizes_once_and_keeps_ram_rejected_archive():
+    task = src("Natives/MinecraftResourceDownloadTask.m")
+    cancel = body(task, "- (void)cancel")
+    failed = body(task, "- (void)finishDownloadWithErrorString:")
+    success = body(task, "- (void)finishDownloadWithSuccess")
+    assert "finishDownloadWithErrorString" in cancel
+    assert "invalidateSessionCancelingTasks:YES" in failed
+    assert "@synchronized (self)" in failed and "@synchronized (self)" in success
+    install = body(src("Natives/installer/ModpackInstallViewController.m"), "- (void)confirmOfflineImportAtPath:")
+    rejected = install[install.index("if (!requirements"):install.index("UIAlertController", install.index("if (!requirements"))]
+    assert "removeItemAtPath:path" not in rejected
 
 
 def test_new_strings_exist_and_english_removed_from_flows():

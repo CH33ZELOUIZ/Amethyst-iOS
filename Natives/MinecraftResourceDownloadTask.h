@@ -21,6 +21,9 @@
 
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path;
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path forceSHA:(BOOL)forceSHA success:(void (^)(void))success failure:(void (^)(NSError *error))failure;
+// Terminal operations are idempotent. Use cancel rather than cancelling progress directly so
+// networking, UI cleanup, and the persisted outcome always converge through one path.
+- (void)cancel;
 - (void)finishDownloadWithErrorString:(NSString *)error;
 - (void)finishDownloadWithSuccess;
 

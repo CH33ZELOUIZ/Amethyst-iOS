@@ -17,10 +17,13 @@
 + (NSArray<DuoPackInfo *> *)installedPacks;
 // Recursive size; call from a background queue only.
 + (unsigned long long)storageBytesForPack:(DuoPackInfo *)pack;
-// Removal is two steps so the slow folder delete stays off the main thread while profile JSON
-// mutation stays on it. Shared versions/ and libraries/ are NOT removed: other profiles may rely on them.
+// Removal is transactional: move the pack folder to a same-volume quarantine off-main, save the
+// profile change on-main, then delete quarantine off-main. Shared versions/ and libraries/ are NOT removed.
 + (BOOL)canRemoveAnyPack;                                              // false when only one profile exists
-+ (BOOL)removePackFolder:(DuoPackInfo *)pack error:(NSError **)error;  // any thread
++ (BOOL)canRemovePackProfile:(DuoPackInfo *)pack error:(NSError **)error; // main thread only; revalidates before quarantine
++ (NSString *)quarantinePackFolder:(DuoPackInfo *)pack error:(NSError **)error; // background only
++ (BOOL)restoreQuarantinedPackFolder:(NSString *)quarantine forPack:(DuoPackInfo *)pack error:(NSError **)error;
++ (BOOL)deleteQuarantinedPackFolder:(NSString *)quarantine error:(NSError **)error; // background only
 + (BOOL)removePackProfile:(DuoPackInfo *)pack error:(NSError **)error; // main thread only
 // Last import outcome, persisted across launches (message never contains paths or secrets).
 + (void)recordImportResult:(BOOL)success message:(NSString *)message;
