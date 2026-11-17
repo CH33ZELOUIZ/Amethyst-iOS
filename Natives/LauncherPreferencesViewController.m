@@ -8,15 +8,22 @@
 #import "LauncherPreferencesViewController.h"
 #import "LauncherPrefContCfgViewController.h"
 #import "LauncherPrefManageJREViewController.h"
+#import "AccountListViewController.h"
+#import "installer/ModpackInstallViewController.h"
+#import "tools/AMTools.h"
 #import "UIKit+hook.h"
 
 #import "config.h"
 #import "ios_uikit_bridge.h"
 #import "utils.h"
 #import "installer/modpack/CurseForgeAPI.h"
+#if DUO_PRIVATE_BUILD
+#import "diagnostics/DuoDiagnosticsViewController.h"
+#endif
 
-@interface LauncherPreferencesViewController()
+@interface LauncherPreferencesViewController()<UISearchResultsUpdating>
 @property(nonatomic) NSArray<NSString*> *rendererKeys, *rendererList;
+@property(nonatomic) UISearchController *settingsSearchController;
 @end
 
 @implementation LauncherPreferencesViewController
@@ -45,7 +52,8 @@
     self.hasDetail = YES;
     self.prefDetailVisible = self.navigationController == nil;
     
-    self.prefSections = @[@"general", @"video", @"control", @"java", @"debug"];
+    // Keep persisted preference namespaces stable while exposing task-oriented sections.
+    self.prefSections = @[@"accounts", @"general", @"video", @"control", @"java", @"files", @"debug"];
 
     self.rendererKeys = getRendererKeys(NO);
     self.rendererList = getRendererNames(NO);
@@ -55,8 +63,19 @@
     };
     self.prefContents = @[
         @[
+            @{@"icon": @"person.crop.circle"},
+            @{@"key": @"accounts", @"title": localize(@"duo.settings.accounts", nil), @"icon": @"person.2",
+              @"type": self.typeChildPane, @"class": AccountListViewController.class,
+              @"canDismissWithSwipe": @YES, @"enableCondition": whenNotInGame}
+        ],
+        @[
             // General settings
             @{@"icon": @"cube"},
+#if DUO_PRIVATE_BUILD
+            @{@"key": @"diagnostics", @"title": localize(@"duo.diag.title", nil), @"icon": @"stethoscope",
+              @"type": self.typeChildPane, @"class": DuoDiagnosticsViewController.class,
+              @"canDismissWithSwipe": @YES, @"enableCondition": whenNotInGame},
+#endif
             @{@"key": @"curseforge_api_key", @"icon": @"key", @"type": self.typeButton,
               @"enableCondition": whenNotInGame, @"action": ^void(){ [self editCurseForgeKey]; }},
             @{@"key": @"check_sha",
@@ -403,7 +422,18 @@
                 @"warnKey": @"mem_warn"
             }
         ], @[
-            // Debug settings - only recommended for developer use
+            @{@"icon": @"folder"},
+            @{@"key": @"files", @"title": localize(@"duo.settings.files", nil), @"icon": @"folder",
+              @"type": self.typeChildPane, @"class": AMFilesHubViewController.class, @"canDismissWithSwipe": @YES,
+              @"enableCondition": whenNotInGame},
+            @{@"key": @"screenshots", @"title": localize(@"duo.settings.screenshots", nil), @"icon": @"photo.on.rectangle",
+              @"type": self.typeChildPane, @"class": AMScreenshotsViewController.class, @"canDismissWithSwipe": @YES,
+              @"enableCondition": whenNotInGame},
+            @{@"key": @"browse_packs", @"title": localize(@"duo.settings.browse_packs", nil), @"icon": @"arrow.down.doc",
+              @"type": self.typeChildPane, @"class": ModpackInstallViewController.class, @"canDismissWithSwipe": @YES,
+              @"enableCondition": whenNotInGame}
+        ], @[
+        // Diagnostics and developer settings.
             @{@"icon": @"ladybug"},
             @{@"key": @"debug_always_attached_jit",
                 @"hasDetail": @YES,
@@ -444,6 +474,12 @@
     ];
 
     [super viewDidLoad];
+    self.settingsSearchController = [[UISearchController alloc] initWithSearchResultsController:nil];
+    self.settingsSearchController.obscuresBackgroundDuringPresentation = NO;
+    self.settingsSearchController.searchResultsUpdater = self;
+    self.settingsSearchController.searchBar.placeholder = localize(@"duo.settings.search", nil);
+    self.navigationItem.searchController = self.settingsSearchController;
+    self.navigationItem.hidesSearchBarWhenScrolling = YES;
     if (self.navigationController == nil) {
         self.tableView.alpha = 0.9;
     }
@@ -453,6 +489,20 @@
         [closeButton addTarget:self action:@selector(actionClose) forControlEvents:UIControlEventTouchUpInside];
         [self.view addSubview:closeButton];
     }
+}
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
+    NSString *query = searchController.searchBar.text.lowercaseString;
+    for (NSUInteger section = 0; section < self.prefContents.count; section++) {
+        BOOL match = !query.length || [localize(([NSString stringWithFormat:@"preference.section.%@", self.prefSections[section]]), nil).lowercaseString rangeOfString:query].location != NSNotFound;
+        for (NSDictionary *item in self.prefContents[section]) {
+            NSString *title = item[@"title"] ?: localize(([NSString stringWithFormat:@"preference.title.%@", item[@"key"]]), nil);
+            NSString *detail = localize(([NSString stringWithFormat:@"preference.detail.%@", item[@"key"]]), nil);
+            if ([title.lowercaseString rangeOfString:query].location != NSNotFound || [detail.lowercaseString rangeOfString:query].location != NSNotFound || [item[@"key"] rangeOfString:query].location != NSNotFound) { match = YES; break; }
+        }
+        self.prefSectionsVisibility[section] = @(match);
+    }
+    [self.tableView reloadData];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {

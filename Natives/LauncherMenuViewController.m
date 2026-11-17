@@ -183,6 +183,9 @@
     }
 
     cell.textLabel.text = [self.options[indexPath.row] title];
+    cell.accessibilityLabel = cell.textLabel.text;
+    cell.accessibilityHint = localize(@"duo.navigation.open", nil);
+    cell.accessibilityTraits = UIAccessibilityTraitButton;
     
     UIImage *origImage = [UIImage systemImageNamed:[self.options[indexPath.row]
         performSelector:@selector(imageName)]];
@@ -202,6 +205,7 @@
             performSelector:@selector(imageName)]];
         cell.imageView.image = [cell.imageView.image _imageWithSize:CGSizeMake(40, 40)];
     }
+    cell.imageView.accessibilityElementsHidden = YES;
     return cell;
 }
 

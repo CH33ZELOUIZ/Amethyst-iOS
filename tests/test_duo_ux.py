@@ -131,6 +131,28 @@ def test_new_strings_exist_and_english_removed_from_flows():
     assert {"Share", "Error", "Remove"} <= keys
 
 
+def test_settings_exposes_accounts_files_import_and_capability_hints():
+    settings = src("Natives/LauncherPreferencesViewController.m")
+    for section in ("accounts", "general", "video", "control", "java", "files", "debug"):
+        assert f'@"{section}"' in settings
+    for controller in ("AccountListViewController.class", "AMFilesHubViewController.class",
+                       "AMScreenshotsViewController.class", "ModpackInstallViewController.class"):
+        assert controller in settings
+    assert "CurseForgeAPI setAPIKey" in settings
+    assert "UISearchController" in settings and "updateSearchResultsForSearchController" in settings
+    table = src("Natives/PLPrefTableViewController.m")
+    assert "disabledReason" in table and "accessibilityHint" in table
+
+
+def test_menu_destinations_are_accessible_on_compact_navigation():
+    menu = src("Natives/LauncherMenuViewController.m")
+    for controller in ("LauncherProfilesViewController.class", "DuoPacksViewController.class",
+                       "LauncherPreferencesViewController.class"):
+        assert controller in menu
+    assert "displayModeButtonItem" in menu
+    assert "accessibilityLabel" in menu and "duo.navigation.open" in menu
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
