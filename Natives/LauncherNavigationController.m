@@ -40,6 +40,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 @property(nonatomic) UIButton* buttonInstall;
 @property(nonatomic) UIBarButtonItem* buttonInstallItem;
 @property(nonatomic) int profileSelectedAt;
+@property(nonatomic, copy) void (^pendingLaunchContinuation)(void);
 
 @end
 
@@ -134,6 +135,13 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     [NSNotificationCenter.defaultCenter addObserver:self
         selector:@selector(receiveNotification:) 
         name:@"InstallModpack"
+        object:nil];
+    // Profile picker is only synced on fresh list fetch, instance change, or manual reload.
+    // The Packs library can change selectedProfileName programmatically when you pick an installed pack,
+    // which needs to trigger a reload so the picker and versionTextField stay consistent.
+    [NSNotificationCenter.defaultCenter addObserver:self
+        selector:@selector(reloadProfileList)
+        name:PLProfilesDidChangeNotification
         object:nil];
 
     if ([BaseAuthenticator.current isKindOfClass:MicrosoftAuthenticator.class]) {
@@ -289,12 +297,22 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     }
 
     if (BaseAuthenticator.current == nil) {
-        // Present the account selector if none selected
+        // Present the account selector if none selected.
+        // Store a continuation callback so account selection can resume launch after the user picks an account.
+        __weak LauncherNavigationController *weakSelf = self;
+        self.pendingLaunchContinuation = ^{
+            LauncherNavigationController *strongSelf = weakSelf;
+            if (strongSelf) [strongSelf launchMinecraft:nil];
+        };
         UIViewController *view = [(UINavigationController *)self.splitViewController.viewControllers[0]
         viewControllers][0];
-        [view performSelector:@selector(selectAccount:) withObject:sender];
+        // selectAccount: will invoke pendingLaunchContinuation when the user picks an account; sender drives the popover anchor.
+        [view performSelector:@selector(selectAccount:) withObject:(sender ?: self.buttonInstall ?: (id)self.buttonInstallItem)];
         return;
     }
+
+    // Clear any pending continuation — we're launching now.
+    self.pendingLaunchContinuation = nil;
 
     [self setInteractionEnabled:NO forDownloading:YES];
 

@@ -243,8 +243,11 @@
         setPrefObject(@"internal.selected_account", BaseAuthenticator.current.authData[@"username"]);
         [self updateAccountInfo];
         if (sender != self.accountButton) {
-            // Called from the play button, so call back to continue
-            [sender sendActionsForControlEvents:UIControlEventPrimaryActionTriggered];
+            // Called from the play button (or Packs library "Launch"), so invoke the launcher continuation.
+            LauncherNavigationController *launcher = (id)self.splitViewController.viewControllers.lastObject;
+            if (launcher.pendingLaunchContinuation) {
+                launcher.pendingLaunchContinuation();
+            }
         }
     };
     vc.modalPresentationStyle = UIModalPresentationPopover;

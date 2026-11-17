@@ -79,7 +79,8 @@
         // Preferences that cannot be isolated
         NSDictionary *general = @{
             @"game_directory": @"default",
-            @"hidden_sidebar": @(realUIIdiom == UIUserInterfaceIdiomPhone),
+            // Keep primary destinations visible by default on every form factor; users can still hide it in Settings.
+            @"hidden_sidebar": @NO,
             @"appicon": @"AppIcon-Light"
         };
         [defaults[@"general"] addEntriesFromDictionary:general];
