@@ -30,7 +30,7 @@ jobs:
         run: |
           export PATH="$(brew --prefix)/opt/make/libexec/gnubin:$(brew --prefix)/bin:$PATH"
           xcodebuild -version
-          gmake -j"$(sysctl -n hw.ncpu)" package PLATFORM=2 BOOTJDK="$JAVA_HOME/bin"
+          gmake -j"$(sysctl -n hw.ncpu)" package PLATFORM=2 DUO_PRIVATE_BUILD=1 BOOTJDK="$JAVA_HOME/bin"
           ls -la artifacts
           git restore Natives/Info.plist
       - name: Verify fold code was compiled in

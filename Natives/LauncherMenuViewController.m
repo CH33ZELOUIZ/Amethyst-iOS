@@ -11,6 +11,8 @@
 #import "LauncherProfilesViewController.h"
 #import "installer/ModrinthModsViewController.h"
 #import "installer/ModpackInstallViewController.h"
+#import "packs/DuoPacksViewController.h"
+#import "diagnostics/DuoDiagnosticsViewController.h"
 #import "tools/AMTools.h"
 #import "PLProfiles.h"
 #import "UIButton+AFNetworking.h"
@@ -67,6 +69,7 @@
     self.options = @[
         [LauncherMenuCustomItem vcClass:LauncherNewsViewController.class],
         [LauncherMenuCustomItem vcClass:LauncherProfilesViewController.class],
+        [LauncherMenuCustomItem vcClass:DuoPacksViewController.class],
         [LauncherMenuCustomItem vcClass:LauncherPreferencesViewController.class],
         [LauncherMenuCustomItem vcClass:ModrinthModsViewController.class],
         [LauncherMenuCustomItem vcClass:LauncherResourcePacksViewController.class],
@@ -75,13 +78,6 @@
         [LauncherMenuCustomItem vcClass:AMScreenshotsViewController.class],
         [LauncherMenuCustomItem vcClass:AMFilesHubViewController.class],
     ].mutableCopy;
-    [self.options addObject:(id)[LauncherMenuCustomItem
-                                 title:@"Modpacks"
-                                 imageName:@"shippingbox" action:^{
-        ModpackInstallViewController *mp = [ModpackInstallViewController new];
-        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:mp];
-        [self presentViewController:nav animated:YES completion:nil];
-    }]];
     if (realUIIdiom != UIUserInterfaceIdiomTV) {
         [self.options addObject:(id)[LauncherMenuCustomItem
                                      title:localize(@"launcher.menu.custom_controls", nil)
@@ -96,40 +92,10 @@
         [contentNavigationController performSelector:@selector(enterModInstaller)];
     }]];
     
-    [self.options addObject:
-     (id)[LauncherMenuCustomItem
-          title:localize(@"login.menu.sendlogs", nil)
-          imageName:@"square.and.arrow.up" action:^{
-        NSString *latestlogPath = [NSString stringWithFormat:@"file://%s/latestlog.old.txt", getenv("AME_HOME")];
-        NSLog(@"Path is %@", latestlogPath);
-        UIActivityViewController *activityVC;
-        if (realUIIdiom != UIUserInterfaceIdiomTV) {
-            activityVC = [[UIActivityViewController alloc]
-                          initWithActivityItems:@[[NSURL URLWithString:latestlogPath]]
-                          applicationActivities:nil];
-        } else {
-            dlopen("/System/Library/PrivateFrameworks/SharingUI.framework/SharingUI", RTLD_GLOBAL);
-            activityVC =
-            [[NSClassFromString(@"SFAirDropSharingViewControllerTV") alloc]
-             performSelector:@selector(initWithSharingItems:)
-             withObject:@[[NSURL URLWithString:latestlogPath]]];
-        }
-        activityVC.popoverPresentationController.sourceView = titleView;
-        activityVC.popoverPresentationController.sourceRect = titleView.bounds;
-        [self presentViewController:activityVC animated:YES completion:nil];
-    }]];
-    
-    NSDateFormatter *dateFormatter = [[NSDateFormatter alloc] init];
-    dateFormatter.dateFormat = @"MM-dd";
-    NSString* date = [dateFormatter stringFromDate:NSDate.date];
-    if([date isEqualToString:@"06-29"] || [date isEqualToString:@"06-30"] || [date isEqualToString:@"07-01"]) {
-        [self.options addObject:(id)[LauncherMenuCustomItem
-                                     title:@"Technoblade never dies!"
-                                     imageName:@"" action:^{
-            openLink(self, [NSURL URLWithString:@"https://youtu.be/DPMluEVUqS0"]);
-        }]];
-    }
-    
+#if DUO_PRIVATE_BUILD
+    [self.options addObject:[LauncherMenuCustomItem vcClass:DuoDiagnosticsViewController.class]];
+#endif
+
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     
     self.navigationController.toolbarHidden = NO;
@@ -386,65 +352,6 @@
             [connection disconnect];
         }];
     }];
-}
-
-- (NSArray<NSURL *> *)collectDiagnosticReportItems {
-    NSFileManager *fm = NSFileManager.defaultManager;
-    const char *homeEnv = getenv("AME_HOME");
-    if (!homeEnv || !*homeEnv) return @[];
-    NSString *home = @(homeEnv);
-    NSMutableArray<NSURL *> *items = [NSMutableArray array];
-
-    for (NSString *name in @[@"latestlog.txt", @"latestlog.old.txt", @"mobilegl.log"]) {
-        NSString *path = [home stringByAppendingPathComponent:name];
-        if ([fm fileExistsAtPath:path]) {
-            [items addObject:[NSURL fileURLWithPath:path]];
-        }
-    }
-
-    NSDirectoryEnumerator *enumerator =
-        [fm enumeratorAtURL:[NSURL fileURLWithPath:home]
-  includingPropertiesForKeys:@[NSURLIsDirectoryKey]
-                     options:NSDirectoryEnumerationSkipsHiddenFiles
-                errorHandler:nil];
-    NSUInteger hsErrFound = 0;
-    static NSSet<NSString *> *skipDirNames;
-    if (!skipDirNames) {
-        skipDirNames = [NSSet setWithArray:@[@"versions", @"libraries", @"assets", @"java_runtimes"]];
-    }
-    for (NSURL *url in enumerator) {
-        NSNumber *isDir = nil;
-        [url getResourceValue:&isDir forKey:NSURLIsDirectoryKey error:nil];
-        NSString *name = url.lastPathComponent;
-        if (isDir.boolValue && [skipDirNames containsObject:name]) {
-            [enumerator skipDescendants];
-            continue;
-        }
-        if (!isDir.boolValue && [name hasPrefix:@"hs_err_pid"] && [url.pathExtension isEqualToString:@"log"]) {
-            [items addObject:url];
-            hsErrFound++;
-            if (hsErrFound >= 3) break; // don't attach an unbounded number
-        }
-    }
-
-    NSMutableString *info = [NSMutableString string];
-    [info appendFormat:@"Amethyst version: %@-%s\n", NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"], CONFIG_TYPE];
-    [info appendFormat:@"Commit: %s (%s)\n", CONFIG_COMMIT, CONFIG_BRANCH];
-    [info appendFormat:@"Device: %@\n", [HostManager GetModelName]];
-    [info appendFormat:@"OS: %@\n", UIDevice.currentDevice.completeOSVersion];
-    const char *installType = getenv("AME_DETECTEDINST");
-    [info appendFormat:@"Install type: %s\n", installType ? installType : "unknown"];
-    [info appendFormat:@"Renderer: %@\n", [PLProfiles resolveKeyForCurrentProfile:@"renderer"]];
-
-    NSString *infoPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"amethyst_diagnostic_info.txt"];
-    NSError *writeError = nil;
-    if ([info writeToFile:infoPath atomically:YES encoding:NSUTF8StringEncoding error:&writeError]) {
-        [items addObject:[NSURL fileURLWithPath:infoPath]];
-    } else {
-        NSLog(@"[LauncherMenuViewController] Failed to write diagnostic info file: %@", writeError);
-    }
-
-    return items;
 }
 
 @end

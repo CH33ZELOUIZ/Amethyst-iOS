@@ -78,6 +78,10 @@ NSNotificationName const PLProfilesDidChangeNotification = @"PLProfilesDidChange
     return self.profileDict[@"profiles"];
 }
 
+- (NSArray<NSString *> *)sortedProfileNames {
+    return [[self.profiles allKeys] sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)];
+}
+
 - (id)selectedProfile {
     return self.profiles[self.selectedProfileName];
 }

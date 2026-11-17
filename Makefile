@@ -23,6 +23,9 @@ LWJGL_SUBS  := $(foreach p,$(LWJGL_PAIRS),$(word 2,$(subst :, ,$(p))))
 # Release vs Debug
 RELEASE ?= 0
 
+# Private developer build (Diagnostics screen + redacted log export). Public builds leave this 0.
+DUO_PRIVATE_BUILD ?= 0
+
 # Check if running on github runner
 RUNNER ?= 0
 
@@ -290,6 +293,7 @@ native: dep_mg
 		-DCONFIG_BRANCH="$(BRANCH)" \
 		-DCONFIG_COMMIT="$(COMMIT)" \
 		-DCONFIG_RELEASE=$(RELEASE) \
+		$(if $(filter 1,$(DUO_PRIVATE_BUILD)),-DDUO_PRIVATE_BUILD=1,) \
 		..
 
 	cmake --build $(WORKINGDIR) --config $(CMAKE_BUILD_TYPE) -j$(JOBS)

@@ -3,6 +3,7 @@
 #import "JavaLauncher.h"
 #import "MinecraftResourceDownloadTask.h"
 #import "PLProfiles.h"
+#import "packs/DuoPackLibrary.h"
 #import "OfflineModpackImporter.h"
 #import "ModpackUtils.h"
 #import "OfflineVanillaSeed.h"
@@ -318,6 +319,7 @@ static uint32_t OfflineLE32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32
     NSMutableDictionary *previousProfile = profiles.profiles[profileName];
     NSString *previousSelection = profiles.selectedProfileName;
     profiles.profiles[profileName] = [@{ @"gameDir": [NSString stringWithFormat:@"./custom_gamedir/%@", profileName], @"name": profileName, @"lastVersionId": profileID, @"icon": @"" } mutableCopy];
+    [DuoPackLibrary markProfile:profiles.profiles[profileName] source:@"offline"];
     profiles.profileDict[@"selectedProfile"] = profileName;
     if (![profiles save:&error]) {
         if (previousProfile) profiles.profiles[profileName] = previousProfile; else [profiles.profiles removeObjectForKey:profileName];

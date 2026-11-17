@@ -367,6 +367,7 @@
     // UIKit (dialogs, UI state reset) must only be touched from the main queue.
     dispatch_async(dispatch_get_main_queue(), ^{
         self.phase = nil;
+        self.lastErrorSummary = error;
         showDialog(title, error);
         if (handler) handler();
     });

@@ -36,7 +36,11 @@ static ModpackInstallViewController *gPickerOwner;
     dispatch_async(dispatch_get_main_queue(), ^{ [self.providerToggle setEnabled:[CurseForgeAPI isConfigured] forSegmentAtIndex:1]; });
 }
 - (void)providerChanged:(UISegmentedControl *)sender {
-    if (sender.selectedSegmentIndex == 1 && ![CurseForgeAPI isConfigured]) { sender.selectedSegmentIndex = 0; return; }
+    if (sender.selectedSegmentIndex == 1 && ![CurseForgeAPI isConfigured]) {
+        sender.selectedSegmentIndex = 0;
+        showDialog(localize(@"duo.curseforge.unavailable.title", nil), localize(@"content.curseforge.unconfigured", nil));
+        return;
+    }
     self.api = sender.selectedSegmentIndex == 1 ? [CurseForgeAPI new] : [ModrinthAPI new];
     self.list = nil;
     [self loadSearchResultsWithPrevList:NO];
@@ -56,7 +60,7 @@ static ModpackInstallViewController *gPickerOwner;
         @"name": @""
         // mcVersion
     }.mutableCopy;
-    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Import Pack" style:UIBarButtonItemStylePlain target:self action:@selector(actionImportMrpack)];
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:localize(@"duo.packs.import", nil) style:UIBarButtonItemStylePlain target:self action:@selector(actionImportMrpack)];
     self.providerToggle = [[UISegmentedControl alloc] initWithItems:@[@"Modrinth", @"CurseForge"]];
     self.providerToggle.selectedSegmentIndex = 0;
     [self.providerToggle setEnabled:[CurseForgeAPI isConfigured] forSegmentAtIndex:1];
@@ -85,15 +89,16 @@ static ModpackInstallViewController *gPickerOwner;
     unsigned long long allocated = getPrefInt(@"java.allocated_memory");
     unsigned long long minimum = [requirements[@"minimumRamMiB"] unsignedLongLongValue];
     unsigned long long desktopRecommended = [requirements[@"desktopRecommendedRamMiB"] unsignedLongLongValue];
-    NSString *message = [NSString stringWithFormat:@"Experimental private full-client pack. It requires at least %llu MiB allocated RAM; its desktop recommendation is %llu MiB. This iPhone has %llu MiB physical RAM and Duo is currently allocated %llu MiB. No iPhone allocation is validated for this pack.", minimum, desktopRecommended, physical, allocated];
+    NSString *message = [NSString stringWithFormat:localize(@"duo.offline.confirm.message", nil), minimum, desktopRecommended, physical, allocated];
     if (!requirements || physical < minimum || allocated < minimum) {
-        showDialog(@"Private pack blocked", [message stringByAppendingString:@" Do not import until the device and current Java allocation meet the minimum."]);
+        // Keep the user's picked copy out of Documents but do not silently destroy anything else; explain how to fix it.
         [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+        showDialog(localize(@"duo.offline.blocked.title", nil), [message stringByAppendingString:localize(@"duo.offline.blocked.hint", nil)]);
         return;
     }
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Experimental private pack" message:message preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) { [NSFileManager.defaultManager removeItemAtPath:path error:nil]; }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"I understand — Import" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"duo.offline.confirm.title", nil) message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) { [NSFileManager.defaultManager removeItemAtPath:path error:nil]; }]];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"duo.offline.confirm.import", nil) style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:nil userInfo:@{@"localPath": path}];
     }]];
     [self presentViewController:alert animated:YES completion:nil];

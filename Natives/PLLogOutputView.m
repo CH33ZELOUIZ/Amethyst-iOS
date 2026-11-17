@@ -1,6 +1,7 @@
 #import "PLLogOutputView.h"
 #import "SurfaceViewController.h"
 #import "utils.h"
+#include "config.h"
 
 @interface PLLogOutputView()<UITableViewDataSource, UITableViewDelegate>
 @property(nonatomic) UITableView* logTableView;
@@ -86,11 +87,10 @@ static PLLogOutputView* current;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil message:line preferredStyle:UIAlertControllerStyleActionSheet];
     alert.popoverPresentationController.sourceView = cell;
     alert.popoverPresentationController.sourceRect = cell.bounds;
-    UIAlertAction *share = [UIAlertAction actionWithTitle:localize(localize(@"Share", nil), nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:@[line] applicationActivities:nil];
-        activityVC.popoverPresentationController.sourceView = _navigationBar;
-        activityVC.popoverPresentationController.sourceRect = _navigationBar.bounds;
-        [currentVC() presentViewController:activityVC animated:YES completion:nil];
+    // Raw single-line sharing could leak tokens/paths, so copying is the only line action; sharing
+    // whole logs goes through the redacted Diagnostics export in private developer builds.
+    UIAlertAction *share = [UIAlertAction actionWithTitle:localize(@"duo.log.copy_line", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        UIPasteboard.generalPasteboard.string = line;
     }];
     UIAlertAction *cancel = [UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil];
     [alert addAction:share];
@@ -104,12 +104,12 @@ static PLLogOutputView* current;
 }
 
 - (void)actionShareLatestlog {
-    NSString *latestlogPath = [NSString stringWithFormat:@"file://%s/latestlog.txt", getenv("AME_HOME")];
-    UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:@[@"latestlog.txt",
-        [NSURL URLWithString:latestlogPath]] applicationActivities:nil];
-    activityVC.popoverPresentationController.sourceView = self.navigationBar;
-        activityVC.popoverPresentationController.sourceRect = self.navigationBar.bounds;
-    [currentVC() presentViewController:activityVC animated:YES completion:nil];
+    // No raw share: logs can contain access tokens, account names and device paths.
+#if DUO_PRIVATE_BUILD
+    showDialog(localize(@"duo.log.share_title", nil), localize(@"duo.log.share_redirect", nil));
+#else
+    showDialog(localize(@"duo.log.share_title", nil), localize(@"duo.log.share_unavailable", nil));
+#endif
 }
 
 - (void)actionStartStopLogOutput {

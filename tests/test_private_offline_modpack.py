@@ -185,7 +185,8 @@ def test_private_pack_ram_requirements_are_bound_and_confirmed_before_install():
     assert "[control[@\"desktopRecommendedRamMiB\"] unsignedLongLongValue] < 6016" in importer
     assert "requirementsForOfflinePackAtPath" in importer
     assert "confirmOfflineImportAtPath" in view
-    assert "I understand — Import" in view
+    assert "duo.offline.confirm.import" in view  # localized "I understand — Import" confirmation
+    assert "I understand — Import" in (ROOT / "Natives/resources/en.lproj/Localizable.strings").read_text()
     assert "physical < minimum || allocated < minimum" in view
     assert "launchNeoForgeInstaller(installer, profileID, installerRoot" in importer
     assert "[NSFileManager.defaultManager removeItemAtPath:publishedVersion" in importer

@@ -1,3 +1,4 @@
+#import "packs/DuoPackLibrary.h"
 #import "MinecraftResourceDownloadTask.h"
 #import "ModrinthAPI.h"
 #import "utils.h"
@@ -214,6 +215,7 @@
             [[NSData dataWithContentsOfFile:tmpIconPath]
             base64EncodedStringWithOptions:0]]
     }.mutableCopy;
+    [DuoPackLibrary markProfile:profiles.profiles[indexDict[@"name"]] source:@"modrinth"];
     profiles.selectedProfileName = indexDict[@"name"];
 }
 

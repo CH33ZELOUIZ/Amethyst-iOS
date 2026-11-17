@@ -1,3 +1,4 @@
+#import "packs/DuoPackLibrary.h"
 #import <Foundation/Foundation.h>
 #import "CurseForgeAPI.h"
 #import "ModrinthSearchFilters.h"
@@ -452,6 +453,7 @@ static NSNumber *CFLoader(NSDictionary *filters) {
         }
         PLProfiles *profiles = PLProfiles.current;
         profiles.profiles[packName] = @{@"gameDir": [NSString stringWithFormat:@"./custom_gamedir/%@", destPath.lastPathComponent], @"name": packName, @"lastVersionId": profileID, @"icon": @""}.mutableCopy;
+        [DuoPackLibrary markProfile:profiles.profiles[packName] source:@"curseforge"];
         profiles.selectedProfileName = packName;
         [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
         

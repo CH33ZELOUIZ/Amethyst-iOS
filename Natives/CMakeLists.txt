@@ -144,6 +144,13 @@ add_executable(AngelAuraAmethyst
   installer/modpack/ModpackUtils.m
   installer/modpack/OfflineModpackImporter.m
   installer/modpack/OfflineVanillaSeed.c
+  diagnostics/DuoLogRedactor.c
+  diagnostics/DuoLogRedaction.m
+  diagnostics/DuoDiagnosticsExport.m
+  diagnostics/DuoDiagnosticsViewController.m
+  packs/DuoPackLibrary.m
+  packs/DuoPacksViewController.m
+  packs/DuoImportProgressViewController.m
   installer/modpack/ModpackAPI.m
   installer/modpack/CurseForgeAPI.m
   installer/modpack/ModrinthAPI.m

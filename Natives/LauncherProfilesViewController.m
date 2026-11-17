@@ -176,7 +176,7 @@ typedef NS_ENUM(NSUInteger, LauncherProfilesTableSection) {
 }
 
 - (void)setupProfileCell:(UITableViewCell *) cell atRow:(NSInteger)row {
-    NSMutableDictionary *profile = PLProfiles.current.profiles.allValues[row];
+    NSMutableDictionary *profile = PLProfiles.current.profiles[PLProfiles.current.sortedProfileNames[row]];
 
     cell.textLabel.text = profile[@"name"];
     cell.detailTextLabel.text = profile[@"lastVersionId"];
@@ -225,7 +225,7 @@ typedef NS_ENUM(NSUInteger, LauncherProfilesTableSection) {
         return;
     }
 
-    [self actionEditProfile:PLProfiles.current.profiles.allValues[indexPath.row]];
+    [self actionEditProfile:PLProfiles.current.profiles[PLProfiles.current.sortedProfileNames[indexPath.row]]];
 }
 
 #pragma mark Context Menu configuration
@@ -236,8 +236,7 @@ typedef NS_ENUM(NSUInteger, LauncherProfilesTableSection) {
 
     UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
     NSString *title = localize(@"preference.title.confirm", nil);
-    // reusing the delete runtime message
-    NSString *message = [NSString stringWithFormat:localize(@"preference.title.confirm.delete_runtime", nil), cell.textLabel.text];
+    NSString *message = [NSString stringWithFormat:localize(@"duo.profile.delete.confirm", nil), cell.textLabel.text];
     UIAlertController *confirmAlert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleActionSheet];
     confirmAlert.popoverPresentationController.sourceView = cell;
     confirmAlert.popoverPresentationController.sourceRect = cell.bounds;
@@ -245,7 +244,7 @@ typedef NS_ENUM(NSUInteger, LauncherProfilesTableSection) {
         [PLProfiles.current.profiles removeObjectForKey:cell.textLabel.text];
         if ([PLProfiles.current.selectedProfileName isEqualToString:cell.textLabel.text]) {
             // The one being deleted is the selected one, switch to the random one now
-            PLProfiles.current.selectedProfileName = PLProfiles.current.profiles.allKeys[0];
+            PLProfiles.current.selectedProfileName = PLProfiles.current.sortedProfileNames[0];
             [self.navigationController performSelector:@selector(reloadProfileList)];
         } else {
             [PLProfiles.current save];

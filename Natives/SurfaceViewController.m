@@ -264,7 +264,7 @@ static CGRect duoActiveFoldRegion(UIView *view) {
         mouse.mouseInput.rightButton.pressedChangedHandler = nil;
         [mouse.mouseInput.auxiliaryButtons makeObjectsPerformSelector:@selector(setPressedChangedHandler:) withObject:nil];
         [self setNeedsUpdateOfPrefersPointerLocked];
-        if (getPrefBool(@"controll.hardware_hide")) {
+        if (getPrefBool(@"control.hardware_hide")) {
             self.ctrlView.hidden = NO;
         }
     }];

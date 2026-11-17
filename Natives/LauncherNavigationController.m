@@ -4,6 +4,8 @@
 #import "ALTServerConnection.h"
 #import "CustomControlsViewController.h"
 #import "DownloadProgressViewController.h"
+#import "packs/DuoImportProgressViewController.h"
+#import "packs/DuoPackLibrary.h"
 #import "JavaGUIViewController.h"
 #import "LauncherMenuViewController.h"
 #import "LauncherNavigationController.h"
@@ -31,6 +33,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 @property(nonatomic) MinecraftResourceDownloadTask* task;
 @property(nonatomic) NSProgress* observedTaskProgress;
 @property(nonatomic) UINavigationController* progressVC;
+@property(nonatomic, weak) UIViewController* importSheet;
 @property(nonatomic) NSArray* globalToolbarItems;
 @property(nonatomic) PLPickerView* versionPickerView;
 @property(nonatomic) PickTextField* versionTextField;
@@ -210,7 +213,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     [PLProfiles updateCurrent];
     [self.versionPickerView reloadAllComponents];
     // Reload selected profile info
-    self.profileSelectedAt = [PLProfiles.current.profiles.allKeys indexOfObject:PLProfiles.current.selectedProfileName];
+    self.profileSelectedAt = [PLProfiles.current.sortedProfileNames indexOfObject:PLProfiles.current.selectedProfileName];
     if (self.profileSelectedAt == -1) {
         // This instance has no profiles?
         return;
@@ -386,6 +389,8 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 
         [self detachProgressObserver];
         self.progressViewMain.observedProgress = nil;
+        [self dismissImportSheet];
+        if (!self.task.metadata && !self.task.progress.cancelled) [DuoPackLibrary recordImportResult:YES message:self.task.phase ?: @"Imported"];
         if (self.task.metadata) {
             __block NSDictionary *metadata = self.task.metadata;
             [self invokeAfterJITEnabled:^{
@@ -424,6 +429,8 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         [strongSelf setInteractionEnabled:YES forDownloading:YES];
         strongSelf.task = nil;
         strongSelf.progressVC = nil;
+        [strongSelf dismissImportSheet];
+        [DuoPackLibrary recordImportResult:NO message:task.lastErrorSummary ?: @"Import failed or was cancelled"];
     };
     task.phaseHandler = ^(NSString *phase) {
         LauncherNavigationController *strongSelf = weakSelf;
@@ -434,6 +441,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     [task prepareProgressForObservation];
     [task reportPhase:isLocal ? @"Starting private pack import" : @"Starting modpack download"];
     [self attachProgressObserverForTask:task];
+    [self presentImportSheetForTask:task local:isLocal];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         if (isLocal) {
             [task installModpackFromLocalFile:userInfo[@"localPath"] api:notification.object];
@@ -441,6 +449,22 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             [task downloadModpackFromAPI:notification.object detail:userInfo[@"detail"] atIndex:[userInfo[@"index"] unsignedLongValue]];
         }
     });
+}
+
+- (void)presentImportSheetForTask:(MinecraftResourceDownloadTask *)task local:(BOOL)isLocal {
+    NSAssert(NSThread.isMainThread, @"import sheet is UIKit");
+    // Present from the top-most controller so it works while the Modpacks modal is still up.
+    UIViewController *top = self.view.window.rootViewController ?: self;
+    while (top.presentedViewController && !top.presentedViewController.isBeingDismissed) top = top.presentedViewController;
+    DuoImportProgressViewController *sheet = [[DuoImportProgressViewController alloc] initWithTask:task title:localize(isLocal ? @"duo.import.title.local" : @"duo.import.title.download", nil)];
+    self.importSheet = sheet;
+    [top presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)dismissImportSheet {
+    DuoImportProgressViewController *sheet = self.importSheet;
+    self.importSheet = nil;
+    if (sheet.presentingViewController) [sheet dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)attachProgressObserverForTask:(MinecraftResourceDownloadTask *)task {
@@ -496,20 +520,24 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     UIAlertController* alert = [UIAlertController alertControllerWithTitle:localize(@"launcher.wait_jit.title", nil)
         message:hasTrollStoreJIT ? localize(@"launcher.wait_jit_trollstore.message", nil) : localize(@"launcher.wait_jit.message", nil)
         preferredStyle:UIAlertControllerStyleAlert];
-/* TODO:
-    UIAlertAction *cancel = [UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:^{
-        
+    // Cancel stops the polling loop and returns the UI to a usable state instead of trapping the user.
+    __block BOOL waitCancelled = NO;
+    UIAlertAction *cancel = [UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        waitCancelled = YES;
+        self.progressText.text = localize(@"duo.jit.cancelled", nil);
+        [self setInteractionEnabled:YES forDownloading:NO];
     }];
     [alert addAction:cancel];
-*/
     [self presentViewController:alert animated:YES completion:nil];
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         while (!isJITEnabled(false)) {
+            if (waitCancelled) return;
             // Perform check for every 200ms
             usleep(1000*200);
         }
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (waitCancelled) return;
             [alert dismissViewControllerAnimated:YES completion:handler];
         });
     });
@@ -538,12 +566,12 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 }
 
 - (NSString *)pickerView:(UIPickerView *)pickerView titleForRow:(NSInteger)row forComponent:(NSInteger)component {
-    return PLProfiles.current.profiles.allValues[row][@"name"];
+    return PLProfiles.current.profiles[PLProfiles.current.sortedProfileNames[row]][@"name"];
 }
 
 - (void)pickerView:(UIPickerView *)pickerView enumerateImageView:(UIImageView *)imageView forRow:(NSInteger)row forComponent:(NSInteger)component {
     UIImage *fallbackImage = [[UIImage imageNamed:@"DefaultProfile"] _imageWithSize:CGSizeMake(40, 40)];
-    NSString *urlString = PLProfiles.current.profiles.allValues[row][@"icon"];
+    NSString *urlString = PLProfiles.current.profiles[PLProfiles.current.sortedProfileNames[row]][@"icon"];
     [imageView setImageWithURL:[NSURL URLWithString:urlString] placeholderImage:fallbackImage];
 }
 
