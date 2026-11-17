@@ -40,7 +40,6 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 @property(nonatomic) UIButton* buttonInstall;
 @property(nonatomic) UIBarButtonItem* buttonInstallItem;
 @property(nonatomic) int profileSelectedAt;
-@property(nonatomic, copy) void (^pendingLaunchContinuation)(void);
 
 @end
 
