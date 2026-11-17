@@ -32,6 +32,7 @@ jobs:
           xcodebuild -version
           gmake -j"$(sysctl -n hw.ncpu)" package PLATFORM=2 BOOTJDK="$JAVA_HOME/bin"
           ls -la artifacts
+          git restore Natives/Info.plist
       - name: Verify fold code was compiled in
         run: |
           APP=$(ls -d artifacts/Payload/*.app | head -1)
