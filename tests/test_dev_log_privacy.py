@@ -77,6 +77,25 @@ def test_embedded_nul_and_empty_input():
     assert "x-api-key" in redact("x-api-key: abc\x00def tail")  # no crash, tail still processed
 
 
+def test_configured_java_values_are_added_as_redaction_literals():
+    implementation = (DIAG / "DuoLogRedaction.m").read_text()
+    for key in ("java.java_args", "java.env_variables"):
+        assert key in implementation
+    redact = load()
+    for secret in ("s3", "xy", "abc"):
+        # The C literal matcher intentionally ignores one- and two-character values,
+        # while arbitrary user-supplied values of three or more characters are removed.
+        assert secret not in redact(f"java argument {secret}", [secret]) if len(secret) >= 3 else True
+
+
+def test_private_verification_workflow_never_publishes():
+    workflow = (ROOT / ".github/workflows/duo-private-verify.yml").read_text()
+    assert "permissions:\n  contents: read" in workflow
+    for forbidden in ("gh release", "altstore/source.json", "git push", "contents: write"):
+        assert forbidden not in workflow
+    assert "actions/upload-artifact@v4" in workflow
+
+
 def test_redactor_has_no_network_or_foundation():
     text = SOURCE.read_text()
     for banned in ("socket", "curl", "http", "NSURL", "#import"):
@@ -116,10 +135,19 @@ def test_no_raw_log_sharing_remains():
 def test_export_is_explicit_reviewed_and_cleaned_up():
     vc = (DIAG / "DuoDiagnosticsViewController.m").read_text()
     assert "duo.devlog.enabled" in vc  # opt-in, default off
+    assert "kConsentKey" not in vc  # confirmation is required for every generated report
+    assert "UIAlertController *consent" in vc
     assert vc.index("DuoLogPreviewViewController") < vc.index("UIActivityViewController")  # preview precedes share
     assert "removeItemAtURL" in vc or "removeItemAtPath" in vc  # temp bundle deleted after sharing
     export = (DIAG / "DuoDiagnosticsExport.m").read_text()
     assert "DuoMaxBundleBytes" in export and "DuoMaxHsErrFiles" in export
+    assert "redactedExportTextFromReviewedText" in export
+    write_start = export.index("+ (NSURL *)writeReportText")
+    assert "redactedExportTextFromReviewedText:text" in export[write_start:]
+    assert "no readable diagnostic logs were found" in export  # honest empty state
+    for detail in ("jitMethod", "GAME_DIR", "RendererCrashTracker"):
+        assert detail in export
+    assert "redactedExportTextFromReviewedText:self.reportText" in vc  # clipboard fallback is re-redacted
 
 
 if __name__ == "__main__":

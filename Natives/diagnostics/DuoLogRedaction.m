@@ -1,6 +1,7 @@
 #import "DuoLogRedaction.h"
 #import "DuoLogRedactor.h"
 #import "authenticator/BaseAuthenticator.h"
+#import "LauncherPreferences.h"
 
 static NSArray<NSString *> *DuoRedactionLiterals(void) {
     NSMutableArray<NSString *> *literals = [NSMutableArray new];
@@ -15,6 +16,11 @@ static NSArray<NSString *> *DuoRedactionLiterals(void) {
     }
     [literals addObject:NSHomeDirectory()];
     [literals addObject:NSTemporaryDirectory().stringByStandardizingPath];
+    // User-configured launch values can contain tokens, credentials, or private endpoints.
+    for (NSString *key in @[@"java.java_args", @"java.env_variables"]) {
+        id value = getPrefObject(key);
+        if ([value isKindOfClass:NSString.class] && [value length] >= 3) [literals addObject:value];
+    }
     return literals;
 }
 

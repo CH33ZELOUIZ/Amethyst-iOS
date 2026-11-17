@@ -13,6 +13,9 @@ FOUNDATION_EXPORT const NSUInteger DuoMaxHsErrFiles;
 + (NSArray<NSArray<NSString *> *> *)statusRows;
 // Reads and redacts log files. Call from a background queue.
 + (NSString *)buildRedactedReport;
+// Re-redacts and size-caps text immediately before it leaves the preview. This is deliberately
+// separate from report generation so a stale or externally supplied preview buffer cannot be shared.
++ (NSString *)redactedExportTextFromReviewedText:(NSString *)text;
 // Short human-readable statement of what is included and redacted (shown in consent and preview).
 + (NSString *)contentsSummary;
 // Writes the reviewed text to a fresh temp directory and returns the file URL. Caller deletes the

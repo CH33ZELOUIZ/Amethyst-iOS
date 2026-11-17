@@ -6,7 +6,6 @@
 #import "utils.h"
 
 static NSString *const kEnabledKey = @"duo.devlog.enabled";
-static NSString *const kConsentKey = @"duo.devlog.consented";
 
 #pragma mark - Preview (the user reviews exactly what will be shared)
 
@@ -46,13 +45,14 @@ static NSString *const kConsentKey = @"duo.devlog.consented";
     ]];
     UIBarButtonItem *share = [[UIBarButtonItem alloc] initWithTitle:localize(@"Share", nil) style:UIBarButtonItemStyleDone target:self action:@selector(actionShare:)];
     share.accessibilityLabel = localize(@"duo.diag.share.a11y", nil);
+    share.accessibilityHint = localize(@"duo.diag.share_hint", nil);
     UIBarButtonItem *copy = [[UIBarButtonItem alloc] initWithTitle:localize(@"duo.diag.copy", nil) style:UIBarButtonItemStylePlain target:self action:@selector(actionCopy)];
     self.navigationItem.rightBarButtonItems = @[share, copy];
 }
 
 - (void)actionCopy {
-    // Fallback when no share destination is usable: the same reviewed, redacted text goes to the clipboard.
-    UIPasteboard.generalPasteboard.string = self.reportText;
+    // Fallback when no share destination is usable. Redact again immediately before export.
+    UIPasteboard.generalPasteboard.string = [DuoDiagnosticsExport redactedExportTextFromReviewedText:self.reportText];
     showDialog(localize(@"duo.diag.copied.title", nil), localize(@"duo.diag.copied.message", nil));
 }
 
@@ -152,21 +152,16 @@ static NSString *const kConsentKey = @"duo.devlog.consented";
 
 - (void)toggleEnabled:(UISwitch *)sender {
     [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:kEnabledKey];
-    if (!sender.on) [NSUserDefaults.standardUserDefaults setBool:NO forKey:kConsentKey];
     [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1] withRowAnimation:UITableViewRowAnimationNone];
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section != 1 || indexPath.row != 1 || ![self exportEnabled] || self.building) return;
-    if ([NSUserDefaults.standardUserDefaults boolForKey:kConsentKey]) {
-        [self buildAndPreview];
-        return;
-    }
+    // Consent is intentionally per-report, not a persisted blanket permission.
     UIAlertController *consent = [UIAlertController alertControllerWithTitle:localize(@"duo.diag.consent.title", nil) message:[DuoDiagnosticsExport contentsSummary] preferredStyle:UIAlertControllerStyleAlert];
     [consent addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
     [consent addAction:[UIAlertAction actionWithTitle:localize(@"duo.diag.consent.continue", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [NSUserDefaults.standardUserDefaults setBool:YES forKey:kConsentKey];
         [self buildAndPreview];
     }]];
     [self presentViewController:consent animated:YES completion:nil];
@@ -181,6 +176,10 @@ static NSString *const kConsentKey = @"duo.devlog.consented";
         dispatch_async(dispatch_get_main_queue(), ^{
             self.building = NO;
             [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1] withRowAnimation:UITableViewRowAnimationNone];
+            if (!report.length) {
+                showDialog(localize(@"Error", nil), localize(@"duo.diag.build_failed", nil));
+                return;
+            }
             DuoLogPreviewViewController *preview = [DuoLogPreviewViewController new];
             preview.reportText = report;
             [self.navigationController pushViewController:preview animated:YES];

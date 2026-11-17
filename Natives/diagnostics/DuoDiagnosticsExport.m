@@ -6,6 +6,7 @@
 #import "HostManagerBridge.h"
 #import "LauncherPreferences.h"
 #import "PLProfiles.h"
+#import "RendererCrashTracker.h"
 #import "UIKit+hook.h"
 #import "installer/modpack/CurseForgeAPI.h"
 #import "utils.h"
@@ -22,6 +23,16 @@ static const NSUInteger kLatestLogTail = 700 * 1024, kOldLogTail = 400 * 1024, k
     return localize(@"duo.diag.jit.disabled", nil);
 }
 
++ (NSString *)jitMethod {
+    if (getEntitlementValue(@"dynamic-codesigning")) return @"dynamic-codesigning entitlement";
+    if (isJailbroken) return @"jailbreak";
+    if (getEntitlementValue(@"com.apple.private.security.no-sandbox")) return @"PT_TRACE_ME";
+    if (getEntitlementValue(@"jb.pmap_cs.custom_trust")) return @"TrollStore";
+    if (isJITEnabled(false)) return @"attached debugger";
+    if (@available(iOS 17.4, *)) return @"StikDebug when launching";
+    return @"SideStore when launching";
+}
+
 + (NSArray<NSArray<NSString *> *> *)statusRows {
     NSMutableArray *rows = [NSMutableArray new];
     void (^add)(NSString *, NSString *) = ^(NSString *key, NSString *value) {
@@ -34,7 +45,13 @@ static const NSUInteger kLatestLogTail = 700 * 1024, kOldLogTail = 400 * 1024, k
     const char *installType = getenv("AME_DETECTEDINST");
     add(@"duo.diag.install_type", installType ? @(installType) : nil);
     add(@"duo.diag.jit", [self jitState]);
+    add(@"duo.diag.jit_method", [self jitMethod]);
+    const char *gameDir = getenv("GAME_DIR");
+    add(@"duo.diag.game_dir", gameDir ? DuoRedactedString(@(gameDir)) : nil);
     add(@"duo.diag.renderer", [NSString stringWithFormat:@"%@ / %@", getPrefObject(@"video.renderer"), [PLProfiles resolveKeyForCurrentProfile:@"renderer"]]);
+    NSString *profileRenderer = [PLProfiles resolveKeyForCurrentProfile:@"renderer"];
+    NSUInteger failures = [RendererCrashTracker consecutiveFailuresForRenderer:profileRenderer];
+    add(@"duo.diag.renderer_crash_tracker", [NSString stringWithFormat:@"%@ pending failure%@", @(failures), failures == 1 ? @"" : @"s"]);
     add(@"duo.diag.java", [NSString stringWithFormat:@"%@", [PLProfiles resolveKeyForCurrentProfile:@"javaVersion"]]);
     unsigned long long physical = NSProcessInfo.processInfo.physicalMemory / (1024ULL * 1024ULL);
     add(@"duo.diag.ram", [NSString stringWithFormat:@"%@ MiB allocated (auto: %@) of %llu MiB", getPrefObject(@"java.allocated_memory"), getPrefBool(@"java.auto_ram") ? @"yes" : @"no", physical]);
@@ -72,12 +89,14 @@ static const NSUInteger kLatestLogTail = 700 * 1024, kOldLogTail = 400 * 1024, k
     for (NSArray<NSString *> *row in [self statusRows]) [report appendFormat:@"%@: %@\n", row[0], row[1]];
 
     NSFileManager *fm = NSFileManager.defaultManager;
+    BOOL foundDiagnosticFile = NO;
     const char *homeEnv = getenv("AME_HOME");
     if (homeEnv && *homeEnv) {
         NSString *home = @(homeEnv);
         NSArray *files = @[@[@"latestlog.txt", @(kLatestLogTail)], @[@"latestlog.old.txt", @(kOldLogTail)], @[@"mobilegl.log", @(kMobileGLTail)]];
         for (NSArray *entry in files) {
             NSString *text = [self tailOfFileAtPath:[home stringByAppendingPathComponent:entry[0]] maxBytes:[entry[1] unsignedIntegerValue]];
+            if (text.length) foundDiagnosticFile = YES;
             [report appendFormat:@"\n== %@ ==\n%@\n", entry[0], text ?: @"(not present)"];
         }
         NSDirectoryEnumerator *enumerator = [fm enumeratorAtURL:[NSURL fileURLWithPath:home] includingPropertiesForKeys:@[NSURLIsDirectoryKey] options:NSDirectoryEnumerationSkipsHiddenFiles errorHandler:nil];
@@ -89,13 +108,21 @@ static const NSUInteger kLatestLogTail = 700 * 1024, kOldLogTail = 400 * 1024, k
             if (isDir.boolValue && [skip containsObject:url.lastPathComponent]) { [enumerator skipDescendants]; continue; }
             if (!isDir.boolValue && [url.lastPathComponent hasPrefix:@"hs_err_pid"] && [url.pathExtension isEqualToString:@"log"]) {
                 NSString *text = [self tailOfFileAtPath:url.path maxBytes:kHsErrTail];
+                if (text.length) foundDiagnosticFile = YES;
                 [report appendFormat:@"\n== %@ ==\n%@\n", url.lastPathComponent, text ?: @"(unreadable)"];
                 if (++found >= DuoMaxHsErrFiles) break;
             }
         }
     }
+    if (!foundDiagnosticFile) [report appendString:@"\n== Diagnostic files ==\n(no readable diagnostic logs were found)\n"];
     // Redact first, then cap, so a cap boundary can never cut a redaction marker in half.
-    NSString *redacted = DuoRedactedString(report);
+    return [self redactedExportTextFromReviewedText:report];
+}
+
++ (NSString *)redactedExportTextFromReviewedText:(NSString *)text {
+    // This is also called immediately before clipboard/file export. Never trust a cached preview
+    // buffer to remain safe after account, path, or configured launch values have changed.
+    NSString *redacted = DuoRedactedString(text ?: @"");
     NSData *utf8 = [redacted dataUsingEncoding:NSUTF8StringEncoding];
     if (utf8.length > DuoMaxBundleBytes) {
         NSData *tail = [utf8 subdataWithRange:NSMakeRange(utf8.length - DuoMaxBundleBytes, DuoMaxBundleBytes)];
@@ -109,6 +136,7 @@ static const NSUInteger kLatestLogTail = 700 * 1024, kOldLogTail = 400 * 1024, k
 }
 
 + (NSURL *)writeReportText:(NSString *)text error:(NSError **)error {
+    text = [self redactedExportTextFromReviewedText:text];
     NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"duo-diagnostics-" stringByAppendingString:NSUUID.UUID.UUIDString]];
     if (![NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:error]) return nil;
     NSString *path = [dir stringByAppendingPathComponent:@"duo-diagnostics.txt"];
