@@ -25,6 +25,7 @@ jobs:
           V="1.0.${{ github.run_number }}"
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $V" Natives/Info.plist
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" Natives/Info.plist
+          git restore Natives/Info.plist  # prevent dirty tree for later source-only commit
       - name: Build IPA
         run: |
           export PATH="$(brew --prefix)/opt/make/libexec/gnubin:$(brew --prefix)/bin:$PATH"
@@ -86,8 +87,6 @@ jobs:
           JSON
           sed -i '' 's/^          //' altstore/source.json
           git config user.name github-actions; git config user.email actions@github.com
-          # Stamp version changes the checked-out plist only for the IPA. Do not let
-          # that unrelated worktree change prevent rebasing the source-only commit.
           git restore Natives/Info.plist
           git add altstore/source.json
           git commit -m "altstore: $TAG [skip ci]"
