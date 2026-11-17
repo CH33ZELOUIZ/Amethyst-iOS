@@ -2,6 +2,7 @@
 
 #import "authenticator/BaseAuthenticator.h"
 #import "installer/modpack/ModpackAPI.h"
+#import "installer/modpack/OfflineModpackImporter.h"
 #import "AFNetworking.h"
 #import "LauncherNavigationController.h"
 #import "LauncherPreferences.h"
@@ -294,6 +295,10 @@
 
 - (void)installModpackFromLocalFile:(NSString *)filePath api:(ModpackAPI *)api {
     [self prepareForDownload];
+    if ([OfflineModpackImporter isOfflinePackAtPath:filePath]) {
+        [OfflineModpackImporter importPackAtPath:filePath downloader:self];
+        return;
+    }
     NSString *name = [[filePath.lastPathComponent stringByDeletingPathExtension] lowercaseString];
     if ([name hasPrefix:@"import-"]) name = [name substringFromIndex:7];
     name = [[name stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet] stringByReplacingOccurrencesOfString:@" " withString:@"_"];

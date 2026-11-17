@@ -142,6 +142,7 @@ add_executable(AngelAuraAmethyst
   tools/AMTools.m
   installer/FabricUtils.m
   installer/modpack/ModpackUtils.m
+  installer/modpack/OfflineModpackImporter.m
   installer/modpack/ModpackAPI.m
   installer/modpack/CurseForgeAPI.m
   installer/modpack/ModrinthAPI.m

@@ -6,6 +6,7 @@
 #import "WFWorkflowProgressView.h"
 #import "modpack/ModrinthAPI.h"
 #import "modpack/CurseForgeAPI.h"
+#import "modpack/OfflineModpackImporter.h"
 #import "config.h"
 #import "ios_uikit_bridge.h"
 #import "utils.h"
@@ -87,6 +88,11 @@ static ModpackInstallViewController *gPickerOwner;
         return;
     }
     [NSFileManager.defaultManager removeItemAtPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"] error:nil];
+    if ([OfflineModpackImporter isOfflinePackAtPath:dest]) {
+        NSLog(@"[ModpackImport] Installing private offline pack %@", dest);
+        [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:nil userInfo:@{@"localPath": dest}];
+        return;
+    }
     NSError *formatError = nil;
     NSString *format = [ModpackUtils packFormatForArchiveAtPath:dest error:&formatError];
     if (!format) {
@@ -105,7 +111,7 @@ static ModpackInstallViewController *gPickerOwner;
 
 - (void)actionImportMrpack {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Import Modpack"
-        message:@"Choose a Modrinth .mrpack or official CurseForge client modpack ZIP. Generic ZIP archives are rejected." preferredStyle:UIAlertControllerStyleActionSheet];
+        message:@"Choose a Modrinth .mrpack, an official CurseForge client ZIP, or a private Duo offline-pack ZIP. Generic ZIP archives are rejected. CurseForge manifests require your API key to download authorized mods. Private full-client packs need roughly two payload copies plus 1 GiB free storage; their 6016 MiB desktop recommendation is not an iPhone claim—start at 4096 MiB manually only if your device has enough RAM." preferredStyle:UIAlertControllerStyleActionSheet];
     for (NSString *path in [self localPackFiles]) {
         [sheet addAction:[UIAlertAction actionWithTitle:path.lastPathComponent style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
             [self importLocalMrpackAtPath:path];
@@ -151,6 +157,11 @@ static ModpackInstallViewController *gPickerOwner;
     }
     // Local imports do not carry the remote browser icon; drop stale state first.
     [NSFileManager.defaultManager removeItemAtPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"] error:nil];
+    if ([OfflineModpackImporter isOfflinePackAtPath:dest]) {
+        NSLog(@"[ModpackImport] Installing private offline pack %@", dest);
+        [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:nil userInfo:@{@"localPath": dest}];
+        return;
+    }
     NSError *formatError = nil;
     NSString *format = [ModpackUtils packFormatForArchiveAtPath:dest error:&formatError];
     if (!format) {
