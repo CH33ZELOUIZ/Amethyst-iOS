@@ -199,18 +199,22 @@
         // The main-thread validation above establishes ownership before the atomic same-volume
         // quarantine. Profile persistence validates again because UI actions can race each other.
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            __block NSError *error = nil;
+            NSError *error = nil;
             NSString *quarantine = [DuoPackLibrary quarantinePackFolder:pack error:&error];
+            NSError *capturedError = error; // Capture for nested block
             dispatch_async(dispatch_get_main_queue(), ^{
-                BOOL ok = quarantine && [DuoPackLibrary removePackProfile:pack error:&error];
+                NSError *removeError = nil;
+                BOOL ok = quarantine && [DuoPackLibrary removePackProfile:pack error:&removeError];
                 if (!ok) {
-                    __block NSError *restoreError = nil;
+                    NSError *displayError = removeError ?: capturedError;
                     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                        NSError *restoreError = nil;
                         if (quarantine && ![DuoPackLibrary restoreQuarantinedPackFolder:quarantine forPack:pack error:&restoreError]) {
-                            dispatch_async(dispatch_get_main_queue(), ^{ showDialog(localize(@"Error", nil), restoreError.localizedDescription); });
+                            NSString *desc = restoreError.localizedDescription;
+                            dispatch_async(dispatch_get_main_queue(), ^{ showDialog(localize(@"Error", nil), desc); });
                         }
                     });
-                    showDialog(localize(@"Error", nil), error.localizedDescription);
+                    showDialog(localize(@"Error", nil), displayError.localizedDescription);
                 } else {
                     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
                         NSError *deleteError = nil;
