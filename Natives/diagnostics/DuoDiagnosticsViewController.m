@@ -3,6 +3,7 @@
 #if DUO_PRIVATE_BUILD
 
 #import "DuoDiagnosticsExport.h"
+#import "ios_uikit_bridge.h"
 #import "utils.h"
 
 static NSString *const kEnabledKey = @"duo.devlog.enabled";
