@@ -199,12 +199,12 @@
         // The main-thread validation above establishes ownership before the atomic same-volume
         // quarantine. Profile persistence validates again because UI actions can race each other.
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            NSError *error = nil;
+            __block NSError *error = nil;
             NSString *quarantine = [DuoPackLibrary quarantinePackFolder:pack error:&error];
             dispatch_async(dispatch_get_main_queue(), ^{
                 BOOL ok = quarantine && [DuoPackLibrary removePackProfile:pack error:&error];
                 if (!ok) {
-                    NSError *restoreError = nil;
+                    __block NSError *restoreError = nil;
                     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                         if (quarantine && ![DuoPackLibrary restoreQuarantinedPackFolder:quarantine forPack:pack error:&restoreError]) {
                             dispatch_async(dispatch_get_main_queue(), ^{ showDialog(localize(@"Error", nil), restoreError.localizedDescription); });
