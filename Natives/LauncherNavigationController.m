@@ -4,6 +4,8 @@
 #import "ALTServerConnection.h"
 #import "CustomControlsViewController.h"
 #import "DownloadProgressViewController.h"
+#import "packs/DuoImportProgressViewController.h"
+#import "packs/DuoPackLibrary.h"
 #import "JavaGUIViewController.h"
 #import "LauncherMenuViewController.h"
 #import "LauncherNavigationController.h"
@@ -29,7 +31,9 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 }
 
 @property(nonatomic) MinecraftResourceDownloadTask* task;
+@property(nonatomic) NSProgress* observedTaskProgress;
 @property(nonatomic) UINavigationController* progressVC;
+@property(nonatomic, weak) UIViewController* importSheet;
 @property(nonatomic) NSArray* globalToolbarItems;
 @property(nonatomic) PLPickerView* versionPickerView;
 @property(nonatomic) PickTextField* versionTextField;
@@ -131,6 +135,13 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         selector:@selector(receiveNotification:) 
         name:@"InstallModpack"
         object:nil];
+    // Profile picker is only synced on fresh list fetch, instance change, or manual reload.
+    // The Packs library can change selectedProfileName programmatically when you pick an installed pack,
+    // which needs to trigger a reload so the picker and versionTextField stay consistent.
+    [NSNotificationCenter.defaultCenter addObserver:self
+        selector:@selector(reloadProfileList)
+        name:PLProfilesDidChangeNotification
+        object:nil];
 
     if ([BaseAuthenticator.current isKindOfClass:MicrosoftAuthenticator.class]) {
         // Perform token refreshment on startup
@@ -209,7 +220,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     [PLProfiles updateCurrent];
     [self.versionPickerView reloadAllComponents];
     // Reload selected profile info
-    self.profileSelectedAt = [PLProfiles.current.profiles.allKeys indexOfObject:PLProfiles.current.selectedProfileName];
+    self.profileSelectedAt = [PLProfiles.current.sortedProfileNames indexOfObject:PLProfiles.current.selectedProfileName];
     if (self.profileSelectedAt == -1) {
         // This instance has no profiles?
         return;
@@ -285,12 +296,22 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     }
 
     if (BaseAuthenticator.current == nil) {
-        // Present the account selector if none selected
+        // Present the account selector if none selected.
+        // Store a continuation callback so account selection can resume launch after the user picks an account.
+        __weak LauncherNavigationController *weakSelf = self;
+        self.pendingLaunchContinuation = ^{
+            LauncherNavigationController *strongSelf = weakSelf;
+            if (strongSelf) [strongSelf launchMinecraft:nil];
+        };
         UIViewController *view = [(UINavigationController *)self.splitViewController.viewControllers[0]
         viewControllers][0];
-        [view performSelector:@selector(selectAccount:) withObject:sender];
+        // selectAccount: will invoke pendingLaunchContinuation when the user picks an account; sender drives the popover anchor.
+        [view performSelector:@selector(selectAccount:) withObject:(sender ?: self.buttonInstall ?: (id)self.buttonInstallItem)];
         return;
     }
+
+    // Clear any pending continuation — we're launching now.
+    self.pendingLaunchContinuation = nil;
 
     [self setInteractionEnabled:NO forDownloading:YES];
 
@@ -376,12 +397,17 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.progressText.text = progress.localizedAdditionalDescription;
+        NSString *phase = self.task.phase;
+        NSString *detail = progress.localizedAdditionalDescription;
+        self.progressText.text = phase.length ? (detail.length ? [NSString stringWithFormat:@"%@ — %@", phase, detail] : phase) : detail;
 
         if (!progress.finished) return;
         [self.progressVC dismissModalViewControllerAnimated:NO];
 
+        [self detachProgressObserver];
         self.progressViewMain.observedProgress = nil;
+        [self dismissImportSheet];
+        if (!self.task.metadata && !self.task.progress.cancelled) [DuoPackLibrary recordImportResult:YES message:self.task.phase ?: @"Imported"];
         if (self.task.metadata) {
             __block NSDictionary *metadata = self.task.metadata;
             [self invokeAfterJITEnabled:^{
@@ -399,27 +425,82 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     if (![notification.name isEqualToString:@"InstallModpack"]) {
         return;
     }
-    [self setInteractionEnabled:NO forDownloading:YES];
-    self.task = [MinecraftResourceDownloadTask new];
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self receiveNotification:notification]; });
+        return;
+    }
     NSDictionary *userInfo = notification.userInfo;
+    BOOL isLocal = userInfo[@"localPath"] != nil;
+    [self setInteractionEnabled:NO forDownloading:YES];
+    self.progressText.text = isLocal ? @"Preparing private pack import…" : nil;
+    self.task = [MinecraftResourceDownloadTask new];
+    MinecraftResourceDownloadTask *task = self.task;
+    __weak LauncherNavigationController *weakSelf = self;
+    task.handleError = ^{
+        // Always invoked on the main queue by finishDownloadWithErrorString.
+        LauncherNavigationController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf detachProgressObserver];
+        strongSelf.progressViewMain.observedProgress = nil;
+        [strongSelf.progressVC dismissViewControllerAnimated:NO completion:nil];
+        [strongSelf setInteractionEnabled:YES forDownloading:YES];
+        strongSelf.task = nil;
+        strongSelf.progressVC = nil;
+        [strongSelf dismissImportSheet];
+        [DuoPackLibrary recordImportResult:NO message:task.lastErrorSummary ?: @"Import failed or was cancelled"];
+    };
+    task.phaseHandler = ^(NSString *phase) {
+        LauncherNavigationController *strongSelf = weakSelf;
+        if (strongSelf && strongSelf.task == task) strongSelf.progressText.text = phase;
+    };
+    // Create the progress and attach the observer BEFORE any import work starts, so the
+    // UI reflects preflight/checksum/extraction/install instead of staying silent.
+    [task prepareProgressForObservation];
+    [task reportPhase:isLocal ? @"Starting private pack import" : @"Starting modpack download"];
+    [self attachProgressObserverForTask:task];
+    [self presentImportSheetForTask:task local:isLocal];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        __weak LauncherNavigationController *weakSelf = self;
-        self.task.handleError = ^{
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [weakSelf setInteractionEnabled:YES forDownloading:YES];
-                weakSelf.task = nil;
-                weakSelf.progressVC = nil;
-            });
-        };
-        [self.task downloadModpackFromAPI:notification.object detail:userInfo[@"detail"] atIndex:[userInfo[@"index"] unsignedLongValue]];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self.progressViewMain.observedProgress = self.task.progress;
-            [self.task.progress addObserver:self
-                forKeyPath:@"fractionCompleted"
-                options:NSKeyValueObservingOptionInitial
-                context:ProgressObserverContext];
-        });
+        if (isLocal) {
+            [task installModpackFromLocalFile:userInfo[@"localPath"] api:notification.object];
+        } else {
+            [task downloadModpackFromAPI:notification.object detail:userInfo[@"detail"] atIndex:[userInfo[@"index"] unsignedLongValue]];
+        }
     });
+}
+
+- (void)presentImportSheetForTask:(MinecraftResourceDownloadTask *)task local:(BOOL)isLocal {
+    NSAssert(NSThread.isMainThread, @"import sheet is UIKit");
+    // Present from the top-most controller so it works while the Modpacks modal is still up.
+    UIViewController *top = self.view.window.rootViewController ?: self;
+    while (top.presentedViewController && !top.presentedViewController.isBeingDismissed) top = top.presentedViewController;
+    DuoImportProgressViewController *sheet = [[DuoImportProgressViewController alloc] initWithTask:task title:localize(isLocal ? @"duo.import.title.local" : @"duo.import.title.download", nil)];
+    self.importSheet = sheet;
+    [top presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)dismissImportSheet {
+    DuoImportProgressViewController *sheet = self.importSheet;
+    self.importSheet = nil;
+    if (sheet.presentingViewController) [sheet dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)attachProgressObserverForTask:(MinecraftResourceDownloadTask *)task {
+    NSAssert(NSThread.isMainThread, @"progress observer must be attached on the main queue");
+    [self detachProgressObserver];
+    self.progressViewMain.observedProgress = task.progress;
+    self.observedTaskProgress = task.progress;
+    [task.progress addObserver:self
+        forKeyPath:@"fractionCompleted"
+        options:NSKeyValueObservingOptionInitial
+        context:ProgressObserverContext];
+}
+
+- (void)detachProgressObserver {
+    NSProgress *observed = self.observedTaskProgress;
+    if (!observed) return;
+    self.observedTaskProgress = nil;
+    @try { [observed removeObserver:self forKeyPath:@"fractionCompleted" context:ProgressObserverContext]; }
+    @catch (NSException *exception) { NSLog(@"[ModpackImport] progress observer already removed"); }
 }
 
 - (void)invokeAfterJITEnabled:(void(^)(void))handler {
@@ -456,20 +537,24 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     UIAlertController* alert = [UIAlertController alertControllerWithTitle:localize(@"launcher.wait_jit.title", nil)
         message:hasTrollStoreJIT ? localize(@"launcher.wait_jit_trollstore.message", nil) : localize(@"launcher.wait_jit.message", nil)
         preferredStyle:UIAlertControllerStyleAlert];
-/* TODO:
-    UIAlertAction *cancel = [UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:^{
-        
+    // Cancel stops the polling loop and returns the UI to a usable state instead of trapping the user.
+    __block BOOL waitCancelled = NO;
+    UIAlertAction *cancel = [UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        @synchronized (self) { waitCancelled = YES; }
+        self.progressText.text = localize(@"duo.jit.cancelled", nil);
+        [self setInteractionEnabled:YES forDownloading:NO];
     }];
     [alert addAction:cancel];
-*/
     [self presentViewController:alert animated:YES completion:nil];
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         while (!isJITEnabled(false)) {
+            @synchronized (self) { if (waitCancelled) return; }
             // Perform check for every 200ms
             usleep(1000*200);
         }
         dispatch_async(dispatch_get_main_queue(), ^{
+            @synchronized (self) { if (waitCancelled) return; }
             [alert dismissViewControllerAnimated:YES completion:handler];
         });
     });
@@ -498,12 +583,12 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 }
 
 - (NSString *)pickerView:(UIPickerView *)pickerView titleForRow:(NSInteger)row forComponent:(NSInteger)component {
-    return PLProfiles.current.profiles.allValues[row][@"name"];
+    return PLProfiles.current.profiles[PLProfiles.current.sortedProfileNames[row]][@"name"];
 }
 
 - (void)pickerView:(UIPickerView *)pickerView enumerateImageView:(UIImageView *)imageView forRow:(NSInteger)row forComponent:(NSInteger)component {
     UIImage *fallbackImage = [[UIImage imageNamed:@"DefaultProfile"] _imageWithSize:CGSizeMake(40, 40)];
-    NSString *urlString = PLProfiles.current.profiles.allValues[row][@"icon"];
+    NSString *urlString = PLProfiles.current.profiles[PLProfiles.current.sortedProfileNames[row]][@"icon"];
     [imageView setImageWithURL:[NSURL URLWithString:urlString] placeholderImage:fallbackImage];
 }
 

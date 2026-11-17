@@ -2,12 +2,18 @@
 #import "AccountListViewController.h"
 #import "AFNetworking.h"
 #import "ALTServerConnection.h"
+#import "HostManagerBridge.h"
 #import "LauncherNavigationController.h"
 #import "LauncherMenuViewController.h"
 #import "LauncherNewsViewController.h"
 #import "LauncherPreferences.h"
 #import "LauncherPreferencesViewController.h"
 #import "LauncherProfilesViewController.h"
+#import "installer/ModrinthModsViewController.h"
+#import "installer/ModpackInstallViewController.h"
+#import "packs/DuoPacksViewController.h"
+#import "diagnostics/DuoDiagnosticsViewController.h"
+#import "tools/AMTools.h"
 #import "PLProfiles.h"
 #import "UIButton+AFNetworking.h"
 #import "UIImageView+AFNetworking.h"
@@ -15,6 +21,7 @@
 #import "ios_uikit_bridge.h"
 #import "utils.h"
 
+#include "config.h"
 #include <dlfcn.h>
 
 @implementation LauncherMenuCustomItem
@@ -62,7 +69,14 @@
     self.options = @[
         [LauncherMenuCustomItem vcClass:LauncherNewsViewController.class],
         [LauncherMenuCustomItem vcClass:LauncherProfilesViewController.class],
+        [LauncherMenuCustomItem vcClass:DuoPacksViewController.class],
         [LauncherMenuCustomItem vcClass:LauncherPreferencesViewController.class],
+        [LauncherMenuCustomItem vcClass:ModrinthModsViewController.class],
+        [LauncherMenuCustomItem vcClass:LauncherResourcePacksViewController.class],
+        [LauncherMenuCustomItem vcClass:LauncherShaderPacksViewController.class],
+        [LauncherMenuCustomItem vcClass:AMWorldsViewController.class],
+        [LauncherMenuCustomItem vcClass:AMScreenshotsViewController.class],
+        [LauncherMenuCustomItem vcClass:AMFilesHubViewController.class],
     ].mutableCopy;
     if (realUIIdiom != UIUserInterfaceIdiomTV) {
         [self.options addObject:(id)[LauncherMenuCustomItem
@@ -78,41 +92,10 @@
         [contentNavigationController performSelector:@selector(enterModInstaller)];
     }]];
     
-    // TODO: Finish log-uploading service integration
-    [self.options addObject:
-     (id)[LauncherMenuCustomItem
-          title:localize(@"login.menu.sendlogs", nil)
-          imageName:@"square.and.arrow.up" action:^{
-        NSString *latestlogPath = [NSString stringWithFormat:@"file://%s/latestlog.old.txt", getenv("AME_HOME")];
-        NSLog(@"Path is %@", latestlogPath);
-        UIActivityViewController *activityVC;
-        if (realUIIdiom != UIUserInterfaceIdiomTV) {
-            activityVC = [[UIActivityViewController alloc]
-                          initWithActivityItems:@[[NSURL URLWithString:latestlogPath]]
-                          applicationActivities:nil];
-        } else {
-            dlopen("/System/Library/PrivateFrameworks/SharingUI.framework/SharingUI", RTLD_GLOBAL);
-            activityVC =
-            [[NSClassFromString(@"SFAirDropSharingViewControllerTV") alloc]
-             performSelector:@selector(initWithSharingItems:)
-             withObject:@[[NSURL URLWithString:latestlogPath]]];
-        }
-        activityVC.popoverPresentationController.sourceView = titleView;
-        activityVC.popoverPresentationController.sourceRect = titleView.bounds;
-        [self presentViewController:activityVC animated:YES completion:nil];
-    }]];
-    
-    NSDateFormatter *dateFormatter = [[NSDateFormatter alloc] init];
-    dateFormatter.dateFormat = @"MM-dd";
-    NSString* date = [dateFormatter stringFromDate:NSDate.date];
-    if([date isEqualToString:@"06-29"] || [date isEqualToString:@"06-30"] || [date isEqualToString:@"07-01"]) {
-        [self.options addObject:(id)[LauncherMenuCustomItem
-                                     title:@"Technoblade never dies!"
-                                     imageName:@"" action:^{
-            openLink(self, [NSURL URLWithString:@"https://youtu.be/DPMluEVUqS0"]);
-        }]];
-    }
-    
+#if DUO_PRIVATE_BUILD
+    [self.options addObject:[LauncherMenuCustomItem vcClass:DuoDiagnosticsViewController.class]];
+#endif
+
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     
     self.navigationController.toolbarHidden = NO;
@@ -200,6 +183,9 @@
     }
 
     cell.textLabel.text = [self.options[indexPath.row] title];
+    cell.accessibilityLabel = cell.textLabel.text;
+    cell.accessibilityHint = localize(@"duo.navigation.open", nil);
+    cell.accessibilityTraits = UIAccessibilityTraitButton;
     
     UIImage *origImage = [UIImage systemImageNamed:[self.options[indexPath.row]
         performSelector:@selector(imageName)]];
@@ -219,6 +205,7 @@
             performSelector:@selector(imageName)]];
         cell.imageView.image = [cell.imageView.image _imageWithSize:CGSizeMake(40, 40)];
     }
+    cell.imageView.accessibilityElementsHidden = YES;
     return cell;
 }
 
@@ -256,8 +243,11 @@
         setPrefObject(@"internal.selected_account", BaseAuthenticator.current.authData[@"username"]);
         [self updateAccountInfo];
         if (sender != self.accountButton) {
-            // Called from the play button, so call back to continue
-            [sender sendActionsForControlEvents:UIControlEventPrimaryActionTriggered];
+            // Called from the play button (or Packs library "Launch"), so invoke the launcher continuation.
+            LauncherNavigationController *launcher = (id)self.splitViewController.viewControllers.lastObject;
+            if (launcher.pendingLaunchContinuation) {
+                launcher.pendingLaunchContinuation();
+            }
         }
     };
     vc.modalPresentationStyle = UIModalPresentationPopover;

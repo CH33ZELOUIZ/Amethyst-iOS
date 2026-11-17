@@ -1,4 +1,5 @@
 #import "config.h"
+#import "renderer_info.h"
 #import "utils.h"
 #import "LauncherPreferences.h"
 #import "PLPreferences.h"
@@ -87,7 +88,8 @@ void setSafeArea(CGSize screenSize, CGRect frame) {
 
 UIEdgeInsets getDefaultSafeArea() {
     UIEdgeInsets safeArea = UIApplication.sharedApplication.windows.firstObject.safeAreaInsets;
-    CGSize screenSize = UIScreen.mainScreen.bounds.size;
+    UIWindow *duoWin = UIApplication.sharedApplication.windows.firstObject;
+    CGSize screenSize = duoWin ? duoWin.bounds.size : UIScreen.mainScreen.bounds.size;
     if (screenSize.width < screenSize.height) {
         safeArea.left = safeArea.top;
         safeArea.right = safeArea.bottom;
@@ -103,8 +105,18 @@ NSString* getSelectedJavaHome(NSString* defaultJRETag, int minVersion) {
     NSDictionary<NSString *, NSString *> *selected = pref[@"0"];
     NSString *selectedVer = selected[defaultJRETag];
     if (minVersion > selectedVer.intValue) {
-        NSArray *sortedVersions = [pref.allKeys valueForKeyPath:@"self.integerValue"];
-        sortedVersions = [sortedVersions sortedArrayUsingSelector:@selector(compare:)];
+        // Candidates: versions in saved prefs plus every runtime bundled in the app.
+        // Saved prefs from an older install may not list newer bundled runtimes (e.g. Java 25).
+        NSMutableSet<NSNumber *> *candidates = [NSMutableSet set];
+        for (NSString *key in pref.allKeys) {
+            if (key.integerValue > 0) [candidates addObject:@(key.integerValue)];
+        }
+        for (NSNumber *v in @[@8, @17, @21, @25]) {
+            NSString *bundled = [NSString stringWithFormat:@"%@/java_runtimes/java-%@-openjdk", NSBundle.mainBundle.bundlePath, v];
+            if ([NSFileManager.defaultManager fileExistsAtPath:bundled]) [candidates addObject:v];
+        }
+        NSArray *sortedVersions = [candidates.allObjects sortedArrayUsingSelector:@selector(compare:)];
+        selectedVer = nil;
         for (NSNumber *version in sortedVersions) {
             if (version.intValue >= minVersion) {
                 selectedVer = version.stringValue;
@@ -118,7 +130,7 @@ NSString* getSelectedJavaHome(NSString* defaultJRETag, int minVersion) {
     }
 
     id selectedDir = pref[selectedVer];
-    if ([selectedDir isEqualToString:@"internal"]) {
+    if (selectedDir == nil || [selectedDir isEqualToString:@"internal"]) {
         selectedDir = [NSString stringWithFormat:@"%@/java_runtimes/java-%@-openjdk", NSBundle.mainBundle.bundlePath, selectedVer];
     } else {
         selectedDir = [NSString stringWithFormat:@"%s/java_runtimes/%@", getenv("AME_HOME"), selectedDir];
@@ -139,7 +151,10 @@ NSArray* getRendererKeys(BOOL containsDefault) {
         @ RENDERER_NAME_GL4ES,
         @ RENDERER_NAME_MTL_ANGLE,
         @ RENDERER_NAME_MOBILEGLUES,
-        @ RENDERER_NAME_VK_ZINK
+        @ RENDERER_NAME_MOBILEGL,
+        @ RENDERER_NAME_VK_ZINK,
+        @ RENDERER_NAME_MOLTENVK,
+        @ RENDERER_NAME_KOSMICKRISP
     ].mutableCopy;
 
     if (containsDefault) {
@@ -157,7 +172,10 @@ NSArray* getRendererNames(BOOL containsDefault) {
         localize(@"preference.title.renderer.debug.gl4es", nil),
         localize(@"preference.title.renderer.debug.angle", nil),
         localize(@"preference.title.renderer.debug.mg", nil),
-        localize(@"preference.title.renderer.debug.zink", nil)
+        localize(@"preference.title.renderer.debug.mobilegl", nil),
+        localize(@"preference.title.renderer.debug.zink", nil),
+        localize(@"preference.title.renderer.debug.moltenvk", nil),
+        localize(@"preference.title.renderer.debug.kosmickrisp", nil)
     ].mutableCopy;
 
     if (containsDefault) {

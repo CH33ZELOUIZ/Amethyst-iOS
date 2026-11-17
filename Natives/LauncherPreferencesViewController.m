@@ -8,14 +8,22 @@
 #import "LauncherPreferencesViewController.h"
 #import "LauncherPrefContCfgViewController.h"
 #import "LauncherPrefManageJREViewController.h"
+#import "AccountListViewController.h"
+#import "installer/ModpackInstallViewController.h"
+#import "tools/AMTools.h"
 #import "UIKit+hook.h"
 
 #import "config.h"
 #import "ios_uikit_bridge.h"
 #import "utils.h"
+#import "installer/modpack/CurseForgeAPI.h"
+#if DUO_PRIVATE_BUILD
+#import "diagnostics/DuoDiagnosticsViewController.h"
+#endif
 
-@interface LauncherPreferencesViewController()
+@interface LauncherPreferencesViewController()<UISearchResultsUpdating>
 @property(nonatomic) NSArray<NSString*> *rendererKeys, *rendererList;
+@property(nonatomic) UISearchController *settingsSearchController;
 @end
 
 @implementation LauncherPreferencesViewController
@@ -44,7 +52,8 @@
     self.hasDetail = YES;
     self.prefDetailVisible = self.navigationController == nil;
     
-    self.prefSections = @[@"general", @"video", @"control", @"java", @"debug"];
+    // Keep persisted preference namespaces stable while exposing task-oriented sections.
+    self.prefSections = @[@"accounts", @"general", @"video", @"control", @"java", @"files", @"debug"];
 
     self.rendererKeys = getRendererKeys(NO);
     self.rendererList = getRendererNames(NO);
@@ -54,8 +63,21 @@
     };
     self.prefContents = @[
         @[
+            @{@"icon": @"person.crop.circle"},
+            @{@"key": @"accounts", @"title": localize(@"duo.settings.accounts", nil), @"icon": @"person.2",
+              @"type": self.typeChildPane, @"class": AccountListViewController.class,
+              @"canDismissWithSwipe": @YES, @"enableCondition": whenNotInGame}
+        ],
+        @[
             // General settings
             @{@"icon": @"cube"},
+#if DUO_PRIVATE_BUILD
+            @{@"key": @"diagnostics", @"title": localize(@"duo.diag.title", nil), @"icon": @"stethoscope",
+              @"type": self.typeChildPane, @"class": DuoDiagnosticsViewController.class,
+              @"canDismissWithSwipe": @YES, @"enableCondition": whenNotInGame},
+#endif
+            @{@"key": @"curseforge_api_key", @"icon": @"key", @"type": self.typeButton,
+              @"enableCondition": whenNotInGame, @"action": ^void(){ [self editCurseForgeKey]; }},
             @{@"key": @"check_sha",
               @"hasDetail": @YES,
               @"icon": @"lock.shield",
@@ -186,6 +208,42 @@
               @"enableCondition": ^BOOL(){
                   return [CAMetalLayer instancesRespondToSelector:@selector(developerHUDProperties)];
               }
+            },
+            @{@"key": @"mobilegl_fast_shader_load",
+              @"hasDetail": @YES,
+              @"icon": @"hare",
+              @"type": self.typeSwitch,
+              @"enableCondition": whenNotInGame
+            },
+            @{@"key": @"mobilegl_buffer_compat",
+              @"hasDetail": @YES,
+              @"icon": @"square.stack.3d.up",
+              @"type": self.typeSwitch,
+              @"enableCondition": whenNotInGame
+            },
+            @{@"key": @"mobilegl_relaxed",
+              @"hasDetail": @YES,
+              @"icon": @"slider.horizontal.3",
+              @"type": self.typeSwitch,
+              @"enableCondition": whenNotInGame
+            },
+            @{@"key": @"moltenvk_fast_math",
+              @"hasDetail": @YES,
+              @"icon": @"bolt",
+              @"type": self.typeSwitch,
+              @"enableCondition": whenNotInGame
+            },
+            @{@"key": @"moltenvk_argument_buffers",
+              @"hasDetail": @YES,
+              @"icon": @"square.grid.3x3",
+              @"type": self.typeSwitch,
+              @"enableCondition": whenNotInGame
+            },
+            @{@"key": @"moltenvk_smooth_scaling",
+              @"hasDetail": @YES,
+              @"icon": @"arrow.up.left.and.arrow.down.right",
+              @"type": self.typeSwitch,
+              @"enableCondition": whenNotInGame
             },
             @{@"key": @"fullscreen_airplay",
               @"hasDetail": @YES,
@@ -364,7 +422,18 @@
                 @"warnKey": @"mem_warn"
             }
         ], @[
-            // Debug settings - only recommended for developer use
+            @{@"icon": @"folder"},
+            @{@"key": @"files", @"title": localize(@"duo.settings.files", nil), @"icon": @"folder",
+              @"type": self.typeChildPane, @"class": AMFilesHubViewController.class, @"canDismissWithSwipe": @YES,
+              @"enableCondition": whenNotInGame},
+            @{@"key": @"screenshots", @"title": localize(@"duo.settings.screenshots", nil), @"icon": @"photo.on.rectangle",
+              @"type": self.typeChildPane, @"class": AMScreenshotsViewController.class, @"canDismissWithSwipe": @YES,
+              @"enableCondition": whenNotInGame},
+            @{@"key": @"browse_packs", @"title": localize(@"duo.settings.browse_packs", nil), @"icon": @"arrow.down.doc",
+              @"type": self.typeChildPane, @"class": ModpackInstallViewController.class, @"canDismissWithSwipe": @YES,
+              @"enableCondition": whenNotInGame}
+        ], @[
+        // Diagnostics and developer settings.
             @{@"icon": @"ladybug"},
             @{@"key": @"debug_always_attached_jit",
                 @"hasDetail": @YES,
@@ -405,6 +474,12 @@
     ];
 
     [super viewDidLoad];
+    self.settingsSearchController = [[UISearchController alloc] initWithSearchResultsController:nil];
+    self.settingsSearchController.obscuresBackgroundDuringPresentation = NO;
+    self.settingsSearchController.searchResultsUpdater = self;
+    self.settingsSearchController.searchBar.placeholder = localize(@"duo.settings.search", nil);
+    self.navigationItem.searchController = self.settingsSearchController;
+    self.navigationItem.hidesSearchBarWhenScrolling = YES;
     if (self.navigationController == nil) {
         self.tableView.alpha = 0.9;
     }
@@ -414,6 +489,20 @@
         [closeButton addTarget:self action:@selector(actionClose) forControlEvents:UIControlEventTouchUpInside];
         [self.view addSubview:closeButton];
     }
+}
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
+    NSString *query = searchController.searchBar.text.lowercaseString;
+    for (NSUInteger section = 0; section < self.prefContents.count; section++) {
+        BOOL match = !query.length || [localize(([NSString stringWithFormat:@"preference.section.%@", self.prefSections[section]]), nil).lowercaseString rangeOfString:query].location != NSNotFound;
+        for (NSDictionary *item in self.prefContents[section]) {
+            NSString *title = item[@"title"] ?: localize(([NSString stringWithFormat:@"preference.title.%@", item[@"key"]]), nil);
+            NSString *detail = localize(([NSString stringWithFormat:@"preference.detail.%@", item[@"key"]]), nil);
+            if ([title.lowercaseString rangeOfString:query].location != NSNotFound || [detail.lowercaseString rangeOfString:query].location != NSNotFound || [item[@"key"] rangeOfString:query].location != NSNotFound) { match = YES; break; }
+        }
+        self.prefSectionsVisibility[section] = @(match);
+    }
+    [self.tableView reloadData];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -431,10 +520,11 @@
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == 0) { // Add to general section
-        return [NSString stringWithFormat:@"Angel Aura Amethyst %@-%s (%s/%s)\n%@ on %@ (%s)\nPID: %d",
+        return [[NSString stringWithFormat:@"Angel Aura Amethyst %@-%s (%s/%s)\n%@ on %@ (%s)\nPID: %d",
             NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"],
             CONFIG_TYPE, CONFIG_BRANCH, CONFIG_COMMIT,
-            UIDevice.currentDevice.completeOSVersion, [HostManager GetModelName], getenv("AME_DETECTEDINST"), getpid()];
+            UIDevice.currentDevice.completeOSVersion, [HostManager GetModelName], getenv("AME_DETECTEDINST"), getpid()]
+            stringByAppendingFormat:@"\n%@", localize([CurseForgeAPI isConfigured] ? @"duo.settings.curseforge_status_on" : @"duo.settings.curseforge_status_off", nil)]];
     }
 
     NSString *footer = NSLocalizedStringWithDefaultValue(([NSString stringWithFormat:@"preference.section.footer.%@", self.prefSections[section]]), @"Localizable", NSBundle.mainBundle, @" ", nil);
@@ -442,6 +532,28 @@
         return nil;
     }
     return footer;
+}
+
+- (void)editCurseForgeKey {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"preference.title.curseforge_api_key", nil) message:localize(@"preference.description.curseforge_api_key", nil) preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.secureTextEntry = YES; field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.textContentType = @"";
+        field.placeholder = [CurseForgeAPI isConfigured] ? localize(@"content.curseforge.key_present", nil) : localize(@"content.curseforge.key_placeholder", nil);
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Save", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSString *key = alert.textFields.firstObject.text;
+        if (!key.length) return;
+        NSError *error;
+        if (![CurseForgeAPI setAPIKey:key error:&error]) showDialog(localize(@"Error", nil), error.localizedDescription);
+    }]];
+    if ([CurseForgeAPI isConfigured]) [alert addAction:[UIAlertAction actionWithTitle:localize(@"content.curseforge.remove_key", nil) style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        NSError *error;
+        if (![CurseForgeAPI setAPIKey:@"" error:&error]) showDialog(localize(@"Error", nil), error.localizedDescription);
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 @end

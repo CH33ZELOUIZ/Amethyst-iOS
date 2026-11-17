@@ -12,6 +12,13 @@
 # define CONFIG_TYPE "development"
 #endif
 
+// Private developer build: enables the Diagnostics screen and redacted log export.
+// Off by default so public builds do not contain that code at all.
+#cmakedefine DUO_PRIVATE_BUILD 1
+#ifndef DUO_PRIVATE_BUILD
+# define DUO_PRIVATE_BUILD 0
+#endif
+
 #cmakedefine CONFIG_BRANCH "@CONFIG_BRANCH@"
 #cmakedefine CONFIG_COMMIT "@CONFIG_COMMIT@"
 

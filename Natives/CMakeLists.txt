@@ -7,9 +7,9 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -target arm64-apple-ios -mcpu=apple-a8 -fcom
 set(CMAKE_C_FLAGS_DEBUG "-funwind-tables -g")
 
 if("${CMAKE_HOST_SYSTEM_NAME}" MATCHES "Linux|^GNU$|Android")
-set(GLOBAL_LDFLAGS "-isysroot ${CMAKE_OSX_SYSROOT} -Wl,-syslibroot,${CMAKE_OSX_SYSROOT} -fuse-ld=lld")
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${GLOBAL_LDFLAGS}")
-set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${GLOBAL_LDFLAGS}")
+  set(GLOBAL_LDFLAGS "-isysroot ${CMAKE_OSX_SYSROOT} -Wl,-syslibroot,${CMAKE_OSX_SYSROOT} -fuse-ld=lld")
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${GLOBAL_LDFLAGS}")
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${GLOBAL_LDFLAGS}")
 endif()
 
 include_directories(
@@ -36,12 +36,14 @@ set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -rpath @loader_path 
 add_library(awt_headless SHARED
   awt_xawt/empty.m
 )
+
 target_link_libraries(awt_headless)
 
 # EXT: cacio support library
 add_library(awt_xawt SHARED
   awt_xawt/xawt_fake.m
 )
+
 target_link_libraries(awt_xawt
   "-L'${CMAKE_CURRENT_LIST_DIR}/build'"
   awt_headless
@@ -49,7 +51,7 @@ target_link_libraries(awt_xawt
 
 set(CMAKE_FRAMEWORK_PATH "${CMAKE_CURRENT_LIST_DIR}/resources/Frameworks")
 
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -rpath @executable_path/Frameworks -rpath @loader_path/Frameworks")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -rdynamic -Wl,-export_dynamic -rpath @executable_path/Frameworks -rpath @loader_path/Frameworks")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -rpath @executable_path/Frameworks -rpath @loader_path/Frameworks")
 
 # ANGLE wrapper for 1.17+
@@ -57,6 +59,7 @@ add_library(tinygl4angle SHARED
   external/gl4es/string_utils.c
   external/gl4es/tinygl4angle.c
 )
+
 target_link_libraries(tinygl4angle
   "${GLOBAL_LDFLAGS}"
   "-F'${CMAKE_CURRENT_LIST_DIR}/resources/Frameworks'"
@@ -78,6 +81,7 @@ add_library(AFNetworking SHARED
   external/AFNetworking/UIKit+AFNetworking/UIButton+AFNetworking.m
   external/AFNetworking/UIKit+AFNetworking/UIImageView+AFNetworking.m
 )
+
 target_link_libraries(AFNetworking
   "-framework CoreGraphics"
   "-framework CoreServices"
@@ -90,6 +94,7 @@ target_link_libraries(AFNetworking
 add_library(AmethystAccountJNI SHARED
   authenticator/MinecraftAccountJNI.m
 )
+
 target_link_libraries(AmethystAccountJNI)
 
 # Angel Aura Amethyst
@@ -99,6 +104,11 @@ add_executable(AngelAuraAmethyst
   main.m
   main_hook.m
   JavaLauncher.m
+  LWJGLVersions.m
+  MoltenVKConfig.m
+  KosmicKrispConfig.m
+  sdl3_hook.m
+  sdl3_gl_layer.m
   external/fishhook/fishhook.c
   UIKit+hook.m
 
@@ -108,7 +118,9 @@ add_executable(AngelAuraAmethyst
 
   ctxbridges/gl_bridge.m
   ctxbridges/osm_bridge.m
- 
+  ctxbridges/vk_bridge.m
+  ctxbridges/vk_preflight.c
+
   customcontrols/ControlButton.m
   customcontrols/ControlDrawer.m
   customcontrols/ControlJoystick.m
@@ -126,11 +138,25 @@ add_executable(AngelAuraAmethyst
   installer/FabricInstallViewController.m
   installer/ForgeInstallViewController.m
   installer/ModpackInstallViewController.m
+  installer/ModrinthModsViewController.m
+  tools/AMTools.m
   installer/FabricUtils.m
   installer/modpack/ModpackUtils.m
+  installer/modpack/OfflineModpackImporter.m
+  installer/modpack/OfflineVanillaSeed.c
+  diagnostics/DuoLogRedactor.c
+  diagnostics/DuoLogRedaction.m
+  diagnostics/DuoDiagnosticsExport.m
+  diagnostics/DuoDiagnosticsViewController.m
+  packs/DuoPackLibrary.m
+  packs/DuoPacksViewController.m
+  packs/DuoImportProgressViewController.m
   installer/modpack/ModpackAPI.m
   installer/modpack/CurseForgeAPI.m
   installer/modpack/ModrinthAPI.m
+  installer/modpack/ModrinthSearchFilters.m
+  installer/modpack/InstalledModsManager.m
+  installer/modpack/ModrinthModInstallation.m
 
   input/ControllerInput.m
   input/GyroInput.m
@@ -158,12 +184,14 @@ add_executable(AngelAuraAmethyst
   MinecraftOptionUtils.m
   MinecraftResourceDownloadTask.m
   MinecraftResourceUtils.m
+  MobileGLConfig.m
   PickTextField.m
   PLLogOutputView.m
   PLPickerView.m
   PLPreferences.m
   PLPrefTableViewController.m
   PLProfiles.m
+  RendererCrashTracker.m
   SceneDelegate.m
   SceneExternalDelegate.m
   SurfaceViewController.m
@@ -172,13 +200,14 @@ add_executable(AngelAuraAmethyst
   SurfaceViewController+Navigation.m
   TrackedTextField.m
   egl_bridge.m
+  ZinkConfig.m
   input_bridge_v3.m
   ios_uikit_bridge.m
   utils.m
 )
 
 if("${CMAKE_HOST_SYSTEM_NAME}" MATCHES "Linux|^GNU$|Android")
-target_sources(AngelAuraAmethyst PUBLIC non_darwin_utils.m)
+  target_sources(AngelAuraAmethyst PUBLIC non_darwin_utils.m)
 endif()
 
 target_link_libraries(AngelAuraAmethyst
@@ -193,6 +222,7 @@ target_link_libraries(AngelAuraAmethyst
   "-framework CoreFoundation"
   "-framework CoreGraphics"
   "-framework CoreImage"
+  "-framework ImageIO"
   "-framework CoreMotion"
   "-framework GameController"
   "-framework IOKit"
@@ -203,7 +233,9 @@ target_link_libraries(AngelAuraAmethyst
   "-framework WebKit"
   "-weak_framework SafariServices"
 )
+
 set_target_properties(AngelAuraAmethyst PROPERTIES
   MACOSX_BUNDLE TRUE
   MACOSX_FRAMEWORK_IDENTIFIER org.cmake.ExecutableTarget
-  MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_LIST_DIR}/Info.plist")
+  MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_LIST_DIR}/Info.plist"
+)

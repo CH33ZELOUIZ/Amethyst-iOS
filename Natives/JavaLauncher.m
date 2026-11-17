@@ -1,3 +1,5 @@
+#include <limits.h>
+#include <stdlib.h>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -9,14 +11,26 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <mach/mach.h>
+#include <mach/task.h>
+#include <mach/thread_status.h>
+#include <mach/exception_types.h>
+
+#include "renderer_info.h"
 #include "utils.h"
+#include "ctxbridges/vk_preflight.h"
 
 #import "ios_uikit_bridge.h"
 #import "JavaLauncher.h"
 #import "LauncherPreferences.h"
+#import "LWJGLVersions.h"
 #import "MinecraftOptionUtils.h"
+#import "MobileGLConfig.h"
+#import "MoltenVKConfig.h"
+#import "KosmicKrispConfig.h"
 #import "PLLogOutputView.h"
 #import "PLProfiles.h"
+#import "ZinkConfig.h"
 
 #define fm NSFileManager.defaultManager
 
@@ -30,6 +44,7 @@ BOOL validateVirtualMemorySpace(size_t size) {
         return NO;
     return YES;
 }
+
 
 void init_loadDefaultEnv() {
     /* Define default env */
@@ -48,6 +63,19 @@ void init_loadDefaultEnv() {
 
     // Override OpenGL version to 4.1 for Zink
     setenv("MESA_GL_VERSION_OVERRIDE", "4.1", 1);
+
+    // MoltenVK 1.4.3 performance defaults for Apple GPUs.
+    // Use setenv(..., 0) so per-profile/user Java environment overrides win.
+    setenv("MVK_CONFIG_FAST_MATH_ENABLED", "2", 0);
+    setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "1", 0);
+    setenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS", "0", 0);
+    setenv("MVK_CONFIG_USE_COMMAND_POOLING", "1", 0);
+    setenv("MVK_CONFIG_USE_MTLHEAP", "1", 0);
+    setenv("MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "1", 0);
+    setenv("MVK_CONFIG_VK_SEMAPHORE_SUPPORT_STYLE", "1", 0);
+    setenv("MVK_CONFIG_RESUME_LOST_DEVICE", "1", 0);
+    // errors only, the default info level dumps ~160 lines of extensions on every instance (the verbose graphics pref below raises it)
+    setenv("MVK_CONFIG_LOG_LEVEL", "1", 0);
 
     // Runs JVM in a separate thread
     setenv("HACK_IGNORE_START_ON_FIRST_THREAD", "1", 1);
@@ -99,7 +127,24 @@ void init_loadCustomJvmFlags(int* argc, const char** argv) {
     }
 }
 
-int launchJVM(NSString *username, id launchTarget, int width, int height, int minVersion) {
+static BOOL versionHasVulkanBackend(NSString *versionId) {
+    if (![versionId isKindOfClass:NSString.class]) return NO;
+    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"(?<![\\d.])(\\d{2})\\.(\\d+)" options:0 error:nil];
+    __block BOOL found = NO;
+    [re enumerateMatchesInString:versionId options:0 range:NSMakeRange(0, versionId.length)
+                      usingBlock:^(NSTextCheckingResult *m, NSMatchingFlags f, BOOL *stop) {
+        int major = [versionId substringWithRange:[m rangeAtIndex:1]].intValue;
+        int minor = [versionId substringWithRange:[m rangeAtIndex:2]].intValue;
+        if (major > 26 || (major == 26 && minor >= 2)) {
+            found = YES;
+            *stop = YES;
+        }
+    }];
+    return found;
+}
+
+static int launchJVMWithJarArguments(NSString *username, id launchTarget, int width, int height,
+                                     int minVersion, NSArray<NSString *> *jarArguments) {
     NSLog(@"[JavaLauncher] Beginning JVM launch");
 
     init_loadDefaultEnv();
@@ -111,7 +156,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     if (requiresTXMWorkaround) {
         static void *result;
         if(!result) result = JIT26CreateRegionLegacy(getpagesize());
-        if ((uint32_t)result != 0x690000E0) {
+        if ((uint32_t)(uintptr_t)result != 0x690000E0) {
             munmap(result, getpagesize());
             // we can't continue since legacy script only allows calling breakpoint once
             NSString *inBundleScriptPath = [NSBundle.mainBundle pathForResource:@"UniversalJIT26" ofType:@"js"];
@@ -131,7 +176,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
             [PLLogOutputView handleExitCode:1];
             return 1;
         }
-        JIT26SendJITScript([NSString stringWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"UniversalJIT26Extension" ofType:@"js"]]);
+        JIT26SendJITScript([NSString stringWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"UniversalJIT26Extension" ofType:@"js"] encoding:NSUTF8StringEncoding error:nil]);
         JIT26SetDetachAfterFirstBr(!jit26AlwaysAttached);
         // make sure we don't get stuck in EXC_BAD_ACCESS
         task_set_exception_ports(mach_task_self(), EXC_MASK_BAD_ACCESS, 0, EXCEPTION_DEFAULT, MACHINE_THREAD_STATE);
@@ -151,6 +196,10 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     BOOL launchJar = NO;
     NSString *gameDir;
     NSString *defaultJRETag;
+    AMLWJGLVersion *lwjgl = nil;
+    BOOL vulkanUnavailable = NO;
+    BOOL gameHasVulkanBackend = NO;
+    BOOL lwjglVersionMismatch = NO;
     NSCAssert(launchTarget, @"Unexpected nil launchTarget");
     if ([launchTarget isKindOfClass:NSDictionary.class]) {
         // Get preferred Java version from current profile
@@ -169,10 +218,74 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
             defaultJRETag = @"1_17_newer";
         }
 
-        // Setup RENDERER
+
+        AMLWJGLSelection *lwjglPick = [AMLWJGLVersions selectForRequiredVersion:launchTarget[@"lwjglVersion"]
+                                                                       versionId:launchTarget[@"id"]];
+        lwjgl = lwjglPick.version;
+        if (lwjglPick.warning) {
+            lwjglVersionMismatch = YES;
+            NSLog(@"[LWJGL] %@", lwjglPick.warning);
+        }
+
+        // Setup AME_RENDERER
         NSString *renderer = [PLProfiles resolveKeyForCurrentProfile:@"renderer"];
+        gameHasVulkanBackend = versionHasVulkanBackend(launchTarget[@"id"]) || versionHasVulkanBackend(launchTarget[@"inheritsFrom"]);
+        if (gameHasVulkanBackend && ame_renderer_from_name(renderer.UTF8String) == AME_RENDERER_AUTO) {
+            renderer = @RENDERER_NAME_MOLTENVK;
+        }
         NSLog(@"[JavaLauncher] RENDERER is set to %@\n", renderer);
-        setenv("RENDERER", renderer.UTF8String, 1);
+        setenv("AME_RENDERER", renderer.UTF8String, 1);
+
+        // Apply Zink-specific environment variables if Zink renderer is selected
+        if ([renderer hasPrefix:@"libOSMesa"]) {
+            [ZinkConfig applyZinkEnvironmentFromPreferences];
+            NSString *configSummary = [ZinkConfig activeConfigSummary];
+            NSLog(@"[ZinkConfig] ========== Zink Renderer Active (Mesa 25) ==========");
+            NSLog(@"[ZinkConfig] %@", configSummary);
+            setenv("ZINK_ACTIVE_CONFIG", configSummary.UTF8String, 1);
+        }
+
+       
+        if (isMobileGLRenderer(renderer.UTF8String)) {
+            [MobileGLConfig applyEnvironmentFromPreferences];
+            NSLog(@"[MobileGLConfig] %@", [MobileGLConfig activeConfigSummary]);
+        } else {
+            unsetenv("MOBILEGL_BACKEND_TYPE");
+            unsetenv("MOBILEGL_LOG_FILE_PATH");
+        }
+
+        ame_renderer_t vulkanKind = ame_renderer_from_name(renderer.UTF8String);
+        if (ame_renderer_is_vulkan_native(vulkanKind)) {
+            // env first, the driver reads its config once when it is loaded
+            const char *vulkanFile = ame_vulkan_library_file(vulkanKind);
+            NSString *vulkanPath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:
+                                    [@"Frameworks/" stringByAppendingString:[NSString stringWithUTF8String:vulkanFile]]];
+            if (vulkanKind == AME_RENDERER_KOSMICKRISP) {
+                [KosmicKrispConfig applyEnvironmentFromPreferences];
+            } else {
+                [MoltenVKConfig applyEnvironmentFromPreferences];
+            }
+
+            ame_vk_preflight_t pf = ame_vk_preflight(vulkanPath.UTF8String);
+            if (pf.ok) {
+                NSLog(@"[Vulkan] %s Vulkan %u.%u.%u, %@", vulkanFile, pf.apiVersion >> 22, (pf.apiVersion >> 12) & 0x3ff, pf.apiVersion & 0xfff,
+                      vulkanKind == AME_RENDERER_KOSMICKRISP ? [KosmicKrispConfig activeConfigSummary]
+                                                             : [MoltenVKConfig activeConfigSummary]);
+            } else {
+                NSLog(@"[Vulkan] %s preflight failed: %s", vulkanFile, pf.error);
+                vulkanUnavailable = YES;
+                renderer = @"auto";
+                setenv("AME_RENDERER", "auto", 1);
+            }
+        }
+
+        // MobileGlues wants a writable dir for its log/cache, the default one is android's /sdcard
+        if (!strcmp(renderer.UTF8String, "libmobileglues.dylib") && getenv("AME_HOME")) {
+            NSString *mgDir = [NSString stringWithFormat:@"%s/mobileglues", getenv("AME_HOME")];
+            [NSFileManager.defaultManager createDirectoryAtPath:mgDir withIntermediateDirectories:YES attributes:nil error:nil];
+            setenv("MG_DIR_PATH", mgDir.UTF8String, 1);
+        }
+
         // Setup gameDir
         gameDir = [NSString stringWithFormat:@"%s/instances/%@/%@",
             getenv("AME_HOME"), getPrefObject(@"general.game_directory"),
@@ -182,7 +295,15 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         defaultJRETag = @"execute_jar";
         gameDir = @(getenv("GAME_DIR"));
         launchJar = YES;
+        // same default a game without lwjglVersion gets
+        lwjgl = [AMLWJGLVersions selectForRequiredVersion:nil versionId:nil].version;
     }
+    if (!lwjgl) {
+        UIKit_returnToSplitView();
+        showDialog(localize(@"Error", nil), @"No LWJGL versions are listed in lwjgl_versions.txt, the app bundle is incomplete.");
+        return 1;
+    }
+    NSLog(@"[JavaLauncher] Using LWJGL from %@", lwjgl.folder);
     NSLog(@"[JavaLauncher] Looking for Java %d or later", minVersion);
     NSString *javaHome = getSelectedJavaHome(defaultJRETag, minVersion);
 
@@ -225,8 +346,21 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         return 1;
     }
 
-    // Setup options.txt
-    [MinecraftOptionUtils setupOptionsAtGameDir:gameDir];
+    NSString *graphicsBackend = nil;
+    if (gameHasVulkanBackend) {
+        BOOL vulkanRuns = !vulkanUnavailable && ame_renderer_is_vulkan_native(ame_renderer_from_name(getenv("AME_RENDERER")));
+        if (vulkanRuns) {
+            // Vulkan-only renderers have no GL to fall back to
+            graphicsBackend = @"vulkan";
+        } else if (vulkanUnavailable) {
+            // the Vulkan driver failed its preflight, a saved "vulkan" could never start
+            graphicsBackend = @"opengl";
+        }
+        // any other renderer (MobileGL, Zink, ...): leave options.txt alone so the in-game
+        // Graphics API choice is kept between launches (#42)
+        NSLog(@"[JavaLauncher] preferredGraphicsBackend=%@", graphicsBackend ?: @"(untouched)");
+    }
+    [MinecraftOptionUtils setupOptionsAtGameDir:gameDir graphicsBackend:graphicsBackend];
     
     int margc = -1;
     const char *margv[1000];
@@ -238,8 +372,46 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     }
     margv[++margc] = "-Xms128M";
     margv[++margc] = [NSString stringWithFormat:@"-Xmx%dM", allocmem].UTF8String;
-    margv[++margc] = [NSString stringWithFormat:@"-Djava.library.path=%@/Frameworks", NSBundle.mainBundle.bundlePath].UTF8String;
+    
+    NSString *frameworksPath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks"];
+    NSString *lwjglNativeSubfolder = lwjgl.nativeSubfolder;
+    NSString *javaLibraryPath = frameworksPath;
+    if (lwjglNativeSubfolder) {
+        javaLibraryPath = [NSString stringWithFormat:@"%@:%@",
+                            [frameworksPath stringByAppendingPathComponent:lwjglNativeSubfolder],
+                            frameworksPath];
+        // sdl3_hook finds libSDL3 through this
+        setenv("AME_LWJGL_NATIVE_SUBFOLDER", lwjglNativeSubfolder.UTF8String, 1);
+    }
+    margv[++margc] = [NSString stringWithFormat:@"-Djava.library.path=%@", javaLibraryPath].UTF8String;
+
+    // video.resolution (percent) for the SDL path, java shrinks the pixel size it reports to minecraft
+    margv[++margc] = [NSString stringWithFormat:@"-Damethyst.resolutionScale=%.3f", getPrefFloat(@"video.resolution") / 100.0].UTF8String;
+
+    margv[++margc] = "-Damethyst.noUpcalls=true";
+
+    if (lwjglNativeSubfolder) {
+        NSString *sdlDylibPath = [[frameworksPath stringByAppendingPathComponent:lwjglNativeSubfolder] stringByAppendingPathComponent:@"libSDL3_controlify.dylib"];
+        if ([fm fileExistsAtPath:sdlDylibPath]) {
+            margv[++margc] = [NSString stringWithFormat:@"-Ddev.isxander.sdl.library=%@", sdlDylibPath].UTF8String;
+        }
+    }
+    margv[++margc] = [NSString stringWithFormat:@"-Dpojav.lwjglVersion=%@", lwjgl.folder].UTF8String;
+    // iOS: /var -> /private/var symlink; the sandbox denies lstat("/var"), which breaks
+    // Path.toRealPath(NOFOLLOW_LINKS) (used e.g. by Cobblemon's Showdown). Use the real path.
+    [NSFileManager.defaultManager createDirectoryAtPath:gameDir withIntermediateDirectories:YES attributes:nil error:nil];
+    char resolvedGameDir[PATH_MAX];
+    if (realpath(gameDir.UTF8String, resolvedGameDir) != NULL) {
+        gameDir = @(resolvedGameDir);
+    }
     margv[++margc] = [NSString stringWithFormat:@"-Duser.dir=%@", gameDir].UTF8String;
+    // Keep the process working directory in sync with user.dir (relative NIO/native paths use the cwd)
+    [NSFileManager.defaultManager createDirectoryAtPath:gameDir withIntermediateDirectories:YES attributes:nil error:nil];
+    if (chdir(gameDir.UTF8String) != 0) {
+        NSLog(@"[JavaLauncher] Working directory: chdir to %@ failed (errno %d)", gameDir, errno);
+    } else {
+        NSLog(@"[JavaLauncher] Working directory set to %@", gameDir);
+    }
     margv[++margc] = [NSString stringWithFormat:@"-Duser.home=%s", getenv("AME_HOME")].UTF8String;
     margv[++margc] = [NSString stringWithFormat:@"-Duser.timezone=%@", NSTimeZone.localTimeZone.name].UTF8String;
     margv[++margc] = [NSString stringWithFormat:@"-DUIScreen.maximumFramesPerSecond=%d", (int)UIScreen.mainScreen.maximumFramesPerSecond].UTF8String;
@@ -248,17 +420,48 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     //margv[++margc] = "-Dorg.lwjgl.util.NoChecks=true";
     margv[++margc] = "-Dlog4j2.formatMsgNoLookups=true";
 
+    // minecraft runs with no log4j config here so everything under ERROR vanishes, give it a plain console one
+    {
+        NSString *logCfg = [NSString stringWithFormat:@"%s/log4j2-ame.xml", getenv("AME_HOME")];
+        NSString *xml = @"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<Configuration status=\"WARN\">\n"
+            "<Appenders><Console name=\"Console\" target=\"SYSTEM_OUT\" direct=\"true\">\n"
+            "<PatternLayout pattern=\"[%d{HH:mm:ss}] [%t/%level] (%logger{1}) %msg{nolookups}%n\"/>\n"
+            "</Console></Appenders>\n"
+            "<Loggers><Root level=\"info\"><AppenderRef ref=\"Console\"/></Root></Loggers>\n"
+            "</Configuration>\n";
+        if ([xml writeToFile:logCfg atomically:YES encoding:NSUTF8StringEncoding error:nil]) {
+            margv[++margc] = [NSString stringWithFormat:@"-Dlog4j.configurationFile=%@", logCfg].UTF8String;
+            margv[++margc] = [NSString stringWithFormat:@"-Damethyst.log4jConfig=%@", logCfg].UTF8String;
+        }
+    }
+
     // Preset OpenGL libname
-    const char *glLibName = getenv("RENDERER");
+    const char *glLibName = getenv("AME_RENDERER");
     if (glLibName) {
-        if (!strcmp(glLibName, "auto")) {
-            // workaround only applies to 1.20.2+
+        if (!strcmp(glLibName, "auto") || ame_renderer_is_vulkan_native(ame_renderer_from_name(glLibName))) {
+            // workaround only applies to 1.20.2+, MoltenVK games that ask for GL land here too
             glLibName = RENDERER_NAME_MTL_ANGLE;
         }
         margv[++margc] = [NSString stringWithFormat:@"-Dorg.lwjgl.opengl.libname=%s", glLibName].UTF8String;
     }
 
+    // read by GLFWVulkan.glfwVulkanSupported, absent means yes
+    if (vulkanUnavailable) margv[++margc] = "-Dame.vulkan.available=false";
+
+    // LWJGL's bare dylib lookup does not search Frameworks, so give it the bundled path of the selected driver
+    ame_renderer_t lwjglVulkanKind = ame_renderer_from_name(getenv("AME_RENDERER"));
+    NSString *bundledVulkan = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:
+                               [@"Frameworks/" stringByAppendingString:[NSString stringWithUTF8String:ame_vulkan_library_file(lwjglVulkanKind)]]];
+    if ([fm fileExistsAtPath:bundledVulkan]) {
+        margv[++margc] = [NSString stringWithFormat:@"-Dame.vulkan.libpath=%@", bundledVulkan].UTF8String;
+    }
+
     NSString *librariesPath = [NSString stringWithFormat:@"%@/libs", NSBundle.mainBundle.bundlePath];
+    if (lwjglVersionMismatch) {
+        // Sodium refuses to start when the game asks for a newer LWJGL than the bundled one (#48)
+        margv[++margc] = "-Dsodium.checks.issue2561=false";
+    }
     margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/patchjna_agent.jar=", librariesPath].UTF8String;
     if(getPrefBool(@"general.cosmetica")) {
         margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/arc_dns_injector.jar=23.95.137.176", librariesPath].UTF8String;
@@ -358,7 +561,13 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     init_loadCustomJvmFlags(&margc, (const char **)margv);
     NSLog(@"[Init] Found JLI lib");
 
-    NSString *classpath = [NSString stringWithFormat:@"%@/*", librariesPath];
+    NSString *classpath;
+    if (lwjglNativeSubfolder) {
+        classpath = [NSString stringWithFormat:@"%@/%@/*:%@/*",
+                     librariesPath, lwjglNativeSubfolder, librariesPath];
+    } else {
+        classpath = [NSString stringWithFormat:@"%@/*", librariesPath];
+    }
     if (launchJar) {
         classpath = [classpath stringByAppendingFormat:@":%@", launchTarget];
     }
@@ -376,6 +585,9 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         margv[++margc] = [launchTarget[@"id"] UTF8String];
     } else {
         margv[++margc] = [launchTarget UTF8String];
+        for (NSString *argument in jarArguments) {
+            margv[++margc] = argument.UTF8String;
+        }
     }
     //margv[++margc] = "ghidra.GhidraRun";
 
@@ -409,4 +621,36 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
                    "java", "openjdk",
                    /* (const_jargs != NULL) ? JNI_TRUE : */ JNI_FALSE,
                    JNI_TRUE, JNI_FALSE, JNI_TRUE);
+}
+
+int launchJVM(NSString *username, id launchTarget, int width, int height, int minVersion) {
+    return launchJVMWithJarArguments(username, launchTarget, width, height, minVersion, nil);
+}
+
+void launchNeoForgeInstaller(NSString *installerPath, NSString *versionID, NSString *installationDirectory,
+                             void (^completion)(BOOL installed, NSString *errorMessage)) {
+    if (!installerPath.length || !versionID.length || !installationDirectory.length || [versionID containsString:@"/"] || [versionID containsString:@"\\"]) {
+        completion(NO, @"The NeoForge installer request is invalid.");
+        return;
+    }
+
+    NSString *versionJSON = [NSString stringWithFormat:@"%@/versions/%@/%@.json", installationDirectory, versionID, versionID];
+    // A pre-existing version file must never make a no-op installer look successful.
+    if ([NSFileManager.defaultManager fileExistsAtPath:versionJSON]) {
+        completion(NO, @"NeoForge version metadata already exists; install must run in a fresh isolated staging root.");
+        return;
+    }
+    int result = launchJVMWithJarArguments(nil, installerPath, windowWidth, windowHeight, 21,
+                                           @[@"--installClient", installationDirectory]);
+    BOOL outputExists = result == 0 && [NSFileManager.defaultManager fileExistsAtPath:versionJSON];
+    NSDictionary *metadata = outputExists ? [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:versionJSON]
+                                                                           options:0 error:nil] : nil;
+    BOOL installed = [metadata isKindOfClass:NSDictionary.class] && [metadata[@"id"] isEqualToString:versionID] &&
+                     [metadata[@"inheritsFrom"] isKindOfClass:NSString.class] &&
+                     [metadata[@"libraries"] isKindOfClass:NSArray.class];
+    if (!installed) {
+        completion(NO, [NSString stringWithFormat:@"NeoForge %@ did not create valid client version metadata (installer exit code %d).", versionID, result]);
+        return;
+    }
+    completion(YES, nil);
 }

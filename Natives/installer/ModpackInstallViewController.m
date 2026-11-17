@@ -5,40 +5,200 @@
 #import "UIKit+hook.h"
 #import "WFWorkflowProgressView.h"
 #import "modpack/ModrinthAPI.h"
+#import "modpack/CurseForgeAPI.h"
+#import "modpack/OfflineModpackImporter.h"
+#import "LauncherPreferences.h"
 #import "config.h"
 #import "ios_uikit_bridge.h"
 #import "utils.h"
 #include <dlfcn.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #define kCurseForgeGameIDMinecraft 432
 #define kCurseForgeClassIDModpack 4471
 #define kCurseForgeClassIDMod 6
 
-@interface ModpackInstallViewController()<UIContextMenuInteractionDelegate>
+@interface ModpackInstallViewController()<UIContextMenuInteractionDelegate, UIDocumentPickerDelegate>
 @property(nonatomic) UISearchController *searchController;
 @property(nonatomic) UIMenu *currentMenu;
 @property(nonatomic) NSMutableArray *list;
 @property(nonatomic) NSMutableDictionary *filters;
-@property ModrinthAPI *modrinth;
+@property ModpackAPI *api;
+@property UISegmentedControl *providerToggle;
 @end
 
+static ModpackInstallViewController *gPickerOwner;
+
 @implementation ModpackInstallViewController
+
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)providerConfigurationChanged:(NSNotification *)notification {
+    dispatch_async(dispatch_get_main_queue(), ^{ [self.providerToggle setEnabled:[CurseForgeAPI isConfigured] forSegmentAtIndex:1]; });
+}
+- (void)providerChanged:(UISegmentedControl *)sender {
+    if (sender.selectedSegmentIndex == 1 && ![CurseForgeAPI isConfigured]) {
+        sender.selectedSegmentIndex = 0;
+        showDialog(localize(@"duo.curseforge.unavailable.title", nil), localize(@"content.curseforge.unconfigured", nil));
+        return;
+    }
+    self.api = sender.selectedSegmentIndex == 1 ? [CurseForgeAPI new] : [ModrinthAPI new];
+    self.list = nil;
+    [self loadSearchResultsWithPrevList:NO];
+}
 
 - (void)viewDidLoad {
     [super viewDidLoad];
 
-    //NSString *curseforgeAPIKey = CONFIG_CURSEFORGE_API_KEY;
+
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.searchController.searchResultsUpdater = self;
     self.searchController.obscuresBackgroundDuringPresentation = NO;
     self.navigationItem.searchController = self.searchController;
-    self.modrinth = [ModrinthAPI new];
+    self.api = [ModrinthAPI new];
     self.filters = @{
         @"isModpack": @(YES),
-        @"name": @" "
+        @"name": @""
         // mcVersion
     }.mutableCopy;
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:localize(@"duo.packs.import", nil) style:UIBarButtonItemStylePlain target:self action:@selector(actionImportMrpack)];
+    self.providerToggle = [[UISegmentedControl alloc] initWithItems:@[@"Modrinth", @"CurseForge"]];
+    self.providerToggle.selectedSegmentIndex = 0;
+    [self.providerToggle setEnabled:[CurseForgeAPI isConfigured] forSegmentAtIndex:1];
+    [self.providerToggle addTarget:self action:@selector(providerChanged:) forControlEvents:UIControlEventValueChanged];
+    self.navigationItem.titleView = self.providerToggle;
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(providerConfigurationChanged:) name:@"CurseForgeConfigurationDidChange" object:nil];
     [self updateSearchResults];
+}
+
+- (NSArray<NSString *> *)localPackFiles {
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSMutableArray *found = [NSMutableArray new];
+    for (NSString *dir in @[docs, [docs stringByAppendingPathComponent:@"modpacks"]]) {
+        for (NSString *f in [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil]) {
+            if ([f.pathExtension.lowercaseString isEqualToString:@"mrpack"] || [f.pathExtension.lowercaseString isEqualToString:@"zip"]) {
+                [found addObject:[dir stringByAppendingPathComponent:f]];
+            }
+        }
+    }
+    return found;
+}
+
+- (void)confirmOfflineImportAtPath:(NSString *)path {
+    NSDictionary *requirements = [OfflineModpackImporter requirementsForOfflinePackAtPath:path];
+    unsigned long long physical = NSProcessInfo.processInfo.physicalMemory / (1024ULL * 1024ULL);
+    unsigned long long allocated = getPrefInt(@"java.allocated_memory");
+    unsigned long long minimum = [requirements[@"minimumRamMiB"] unsignedLongLongValue];
+    unsigned long long desktopRecommended = [requirements[@"desktopRecommendedRamMiB"] unsignedLongLongValue];
+    NSString *message = [NSString stringWithFormat:localize(@"duo.offline.confirm.message", nil), minimum, desktopRecommended, physical, allocated];
+    if (!requirements || physical < minimum || allocated < minimum) {
+        // Keep the selected archive available so the user can adjust RAM and retry.
+        showDialog(localize(@"duo.offline.blocked.title", nil), [message stringByAppendingString:localize(@"duo.offline.blocked.hint", nil)]);
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"duo.offline.confirm.title", nil) message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) { [NSFileManager.defaultManager removeItemAtPath:path error:nil]; }]];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"duo.offline.confirm.import", nil) style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:nil userInfo:@{@"localPath": path}];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)importLocalMrpackAtPath:(NSString *)src {
+    NSString *dest = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"import-" stringByAppendingString:src.lastPathComponent]];
+    [NSFileManager.defaultManager removeItemAtPath:dest error:nil];
+    NSError *error;
+    NSLog(@"[ModpackImport] Copying local pack into app temp storage");
+    [NSFileManager.defaultManager copyItemAtPath:src toPath:dest error:&error];
+    if (error) {
+        showDialog(localize(@"Error", nil), error.localizedDescription);
+        return;
+    }
+    [NSFileManager.defaultManager removeItemAtPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"] error:nil];
+    if ([OfflineModpackImporter isOfflinePackAtPath:dest]) {
+        NSLog(@"[ModpackImport] Confirming private offline pack %@", dest);
+        [self confirmOfflineImportAtPath:dest];
+        return;
+    }
+    NSError *formatError = nil;
+    NSString *format = [ModpackUtils packFormatForArchiveAtPath:dest error:&formatError];
+    if (!format) {
+        [NSFileManager.defaultManager removeItemAtPath:dest error:nil];
+        showDialog(localize(@"Error", nil), formatError.localizedDescription);
+        return;
+    }
+    NSLog(@"[ModpackImport] Installing local %@ modpack %@", format, dest);
+    ModpackAPI *api = [format isEqualToString:@"curseforge"] ? [CurseForgeAPI new] : [ModrinthAPI new];
+    [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:api userInfo:@{@"localPath": dest}];
+    UINavigationController *nav = self.navigationController;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [nav.presentingViewController dismissViewControllerAnimated:YES completion:nil];
+    });
+}
+
+- (void)actionImportMrpack {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Import Modpack"
+        message:@"Choose a Modrinth .mrpack, an official CurseForge client ZIP, or a private Duo offline-pack ZIP. Generic ZIP archives are rejected. CurseForge manifests require your API key to download authorized mods. Private full-client packs need roughly two payload copies plus 1 GiB free storage. There is no validated iPhone RAM allocation for this pack; only continue after confirming your device's physical memory and current allocation are sufficient." preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSString *path in [self localPackFiles]) {
+        [sheet addAction:[UIAlertAction actionWithTitle:path.lastPathComponent style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            [self importLocalMrpackAtPath:path];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Choose from Files..." style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        UIViewController *root = self.navigationController.presentingViewController;
+        gPickerOwner = self; // keep alive: the picker's delegate is weak and this sheet gets dismissed
+        [self.navigationController dismissViewControllerAnimated:YES completion:^{
+            UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
+                initForOpeningContentTypes:@[UTTypeItem] asCopy:YES];
+            picker.delegate = gPickerOwner;
+            picker.allowsMultipleSelection = NO;
+            picker.modalPresentationStyle = UIModalPresentationFullScreen;
+            [root presentViewController:picker animated:YES completion:nil];
+        }];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.barButtonItem = self.navigationItem.leftBarButtonItem;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    gPickerOwner = nil;
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    dispatch_async(dispatch_get_main_queue(), ^{ gPickerOwner = nil; });
+    NSURL *url = urls.firstObject;
+    if (!url) return;
+    NSString *ext = url.pathExtension.lowercaseString;
+    if (![ext isEqualToString:@"mrpack"] && ![ext isEqualToString:@"zip"]) {
+        showDialog(localize(@"Error", nil), @"Please pick a Modrinth .mrpack or official CurseForge client modpack ZIP.");
+        return;
+    }
+    NSString *dest = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"import-" stringByAppendingString:url.lastPathComponent]];
+    [NSFileManager.defaultManager removeItemAtPath:dest error:nil];
+    NSError *error;
+    NSLog(@"[ModpackImport] Copying selected pack from Files/iCloud into app temp storage");
+    [NSFileManager.defaultManager copyItemAtPath:url.path toPath:dest error:&error];
+    NSLog(@"[ModpackImport] Copy finished (error: %@)", error ? @"yes" : @"no");
+    if (error) {
+        showDialog(localize(@"Error", nil), error.localizedDescription);
+        return;
+    }
+    // Local imports do not carry the remote browser icon; drop stale state first.
+    [NSFileManager.defaultManager removeItemAtPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"] error:nil];
+    if ([OfflineModpackImporter isOfflinePackAtPath:dest]) {
+        NSLog(@"[ModpackImport] Confirming private offline pack %@", dest);
+        [self confirmOfflineImportAtPath:dest];
+        return;
+    }
+    NSError *formatError = nil;
+    NSString *format = [ModpackUtils packFormatForArchiveAtPath:dest error:&formatError];
+    if (!format) {
+        [NSFileManager.defaultManager removeItemAtPath:dest error:nil];
+        showDialog(localize(@"Error", nil), formatError.localizedDescription);
+        return;
+    }
+    ModpackAPI *api = [format isEqualToString:@"curseforge"] ? [CurseForgeAPI new] : [ModrinthAPI new];
+    [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:api userInfo:@{@"localPath": dest}];
 }
 
 - (void)loadSearchResultsWithPrevList:(BOOL)prevList {
@@ -50,13 +210,13 @@
     [self switchToLoadingState];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         self.filters[@"name"] = name;
-        self.list = [self.modrinth searchModWithFilters:self.filters previousPageResult:prevList ? self.list : nil];
+        self.list = [self.api searchModWithFilters:self.filters previousPageResult:prevList ? self.list : nil];
         dispatch_async(dispatch_get_main_queue(), ^{
             if (self.list) {
                 [self switchToReadyState];
                 [self.tableView reloadData];
             } else {
-                showDialog(localize(@"Error", nil), self.modrinth.lastError.localizedDescription);
+                showDialog(localize(@"Error", nil), self.api.lastError.localizedDescription);
                 [self actionClose];
             }
         });
@@ -132,7 +292,7 @@
     UIImage *fallbackImage = [UIImage imageNamed:@"DefaultProfile"];
     [cell.imageView setImageWithURL:[NSURL URLWithString:item[@"imageUrl"]] placeholderImage:fallbackImage];
 
-    if (!self.modrinth.reachedLastPage && indexPath.row == self.list.count-1) {
+    if (!self.api.reachedLastPage && indexPath.row == self.list.count-1) {
         [self loadSearchResultsWithPrevList:YES];
     }
 
@@ -157,7 +317,9 @@
             [self actionClose];
             NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
                 [UIImagePNGRepresentation([cell.imageView.image _imageWithSize:CGSizeMake(40, 40)]) writeToFile:tmpIconPath atomically:YES];
-            [self.modrinth installModpackFromDetail:self.list[indexPath.row] atIndex:i];
+            NSString *reason = details[@"versionUnavailableReasons"][i];
+            if (reason.length) { showDialog(localize(@"Error", nil), reason); return; }
+            [self.api installModpackFromDetail:self.list[indexPath.row] atIndex:i];
         }]];
     }];
 
@@ -176,13 +338,13 @@
     [tableView deselectRowAtIndexPath:indexPath animated:NO];
     [self switchToLoadingState];
 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        [self.modrinth loadDetailsOfMod:self.list[indexPath.row]];
+        [self.api loadDetailsOfMod:self.list[indexPath.row]];
         dispatch_async(dispatch_get_main_queue(), ^{
             [self switchToReadyState];
             if ([item[@"versionDetailsLoaded"] boolValue]) {
                 [self showDetails:item atIndexPath:indexPath];
             } else {
-                showDialog(localize(@"Error", nil), self.modrinth.lastError.localizedDescription);
+                showDialog(localize(@"Error", nil), self.api.lastError.localizedDescription);
             }
         });
     });

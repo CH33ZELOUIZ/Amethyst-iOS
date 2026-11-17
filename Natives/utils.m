@@ -7,20 +7,48 @@
 #include <unistd.h>
 #include <dirent.h>
 
+#include <pthread.h>
+
 #include "utils.h"
+
+// Foreground/background gate. appIsForeground lives in environ.h (shared with
+// the render bridges) but all writes/waits go through these functions so the
+// render thread can block until the app is active again without a busy loop.
+static pthread_mutex_t s_foregroundMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t s_foregroundCond = PTHREAD_COND_INITIALIZER;
+
+void pojavSetAppForeground(BOOL foreground) {
+    pthread_mutex_lock(&s_foregroundMutex);
+    __atomic_store_n(&appIsForeground, foreground, __ATOMIC_RELEASE);
+    pthread_cond_broadcast(&s_foregroundCond);
+    pthread_mutex_unlock(&s_foregroundMutex);
+}
+
+void pojavWaitForAppForeground(void) {
+    // runs once per swap, skip the mutex while the app is active
+    if (__atomic_load_n(&appIsForeground, __ATOMIC_ACQUIRE)) return;
+    pthread_mutex_lock(&s_foregroundMutex);
+    while (!__atomic_load_n(&appIsForeground, __ATOMIC_ACQUIRE)) {
+        pthread_cond_wait(&s_foregroundCond, &s_foregroundMutex);
+    }
+    pthread_mutex_unlock(&s_foregroundMutex);
+}
+
 
 CFTypeRef SecTaskCopyValueForEntitlement(void* task, NSString* entitlement, CFErrorRef  _Nullable *error);
 void* SecTaskCreateFromSelf(CFAllocatorRef allocator);
 
 BOOL getEntitlementValue(NSString *key) {
     void *secTask = SecTaskCreateFromSelf(NULL);
-    CFTypeRef value = SecTaskCopyValueForEntitlement(SecTaskCreateFromSelf(NULL), key, nil);
+    CFTypeRef value = SecTaskCopyValueForEntitlement(secTask, key, nil);
     CFRelease(secTask);
     if (value == nil) {
         return NO;
     }
+    // read it before the release, the old order touched freed memory
+    BOOL result = ![(__bridge id)value isKindOfClass:NSNumber.class] || [(__bridge id)value boolValue];
     CFRelease(value);
-    return ![(__bridge id)value isKindOfClass:NSNumber.class] || [(__bridge id)value boolValue];
+    return result;
 }
 
 BOOL isJITEnabled(BOOL checkCSFlags) {

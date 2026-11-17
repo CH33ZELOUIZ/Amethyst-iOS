@@ -22,6 +22,12 @@
             @"resolution": @(100),
             @"max_framerate": @YES,
             @"performance_hud": @NO,
+            @"mobilegl_fast_shader_load": @NO,
+            @"mobilegl_buffer_compat": @NO,
+            @"mobilegl_relaxed": @NO,
+            @"moltenvk_fast_math": @YES,
+            @"moltenvk_argument_buffers": @YES,
+            @"moltenvk_smooth_scaling": @NO,
             @"fullscreen_airplay": @YES,
             @"silence_other_audio": @NO,
             @"silence_with_switch": @NO,
@@ -73,7 +79,8 @@
         // Preferences that cannot be isolated
         NSDictionary *general = @{
             @"game_directory": @"default",
-            @"hidden_sidebar": @(realUIIdiom == UIUserInterfaceIdiomPhone),
+            // Keep primary destinations visible by default on every form factor; users can still hide it in Settings.
+            @"hidden_sidebar": @NO,
             @"appicon": @"AppIcon-Light"
         };
         [defaults[@"general"] addEntriesFromDictionary:general];

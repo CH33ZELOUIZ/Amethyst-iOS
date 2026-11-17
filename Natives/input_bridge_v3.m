@@ -16,14 +16,18 @@
 #include <dlfcn.h>
 #include <libgen.h>
 #include <stdlib.h>
+#include <os/lock.h>
 #include <stdatomic.h>
 
 #include "jni.h"
+#include "renderer_info.h"
 #include "glfw_keycodes.h"
 #include "ios_uikit_bridge.h"
 #include "utils.h"
 
 #include "JavaLauncher.h"
+#include "sdl3_hook.h"
+#include "ctxbridges/vk_bridge.h"
 
 jint (*orig_ProcessImpl_forkAndExec)(JNIEnv *env, jobject process, jint mode, jbyteArray helperpath, jbyteArray prog, jbyteArray argBlock, jint argc, jbyteArray envBlock, jint envc, jbyteArray dir, jintArray std_fds, jboolean redirectErrorStream);
 jlong (*orig_ProcessHandleImpl_isAlive0)(JNIEnv *env, jclass clazz, jlong jpid);
@@ -209,12 +213,93 @@ void registerOpenHandler(JNIEnv *env) {
 }
 
 // JNI_OnLoad
-void JNI_OnLoadGLFW() {
-    vmGlfwClass = (*runtimeJNIEnvPtr)->NewGlobalRef(runtimeJNIEnvPtr, (*runtimeJNIEnvPtr)->FindClass(runtimeJNIEnvPtr, "org/lwjgl/glfw/GLFW"));
-    method_internalWindowSizeChanged = (*runtimeJNIEnvPtr)->GetStaticMethodID(runtimeJNIEnvPtr, vmGlfwClass, "internalWindowSizeChanged", "(JII)V");
-    jfieldID field_keyDownBuffer = (*runtimeJNIEnvPtr)->GetStaticFieldID(runtimeJNIEnvPtr, vmGlfwClass, "keyDownBuffer", "Ljava/nio/ByteBuffer;");
-    jobject keyDownBufferJ = (*runtimeJNIEnvPtr)->GetStaticObjectField(runtimeJNIEnvPtr, vmGlfwClass, field_keyDownBuffer);
-    keyDownBuffer = (*runtimeJNIEnvPtr)->GetDirectBufferAddress(runtimeJNIEnvPtr, keyDownBufferJ);
+static void logPendingException(JNIEnv *env, const char *ctx) {
+    jthrowable exc = (*env)->ExceptionOccurred(env);
+    if (exc == NULL) return;
+    (*env)->ExceptionClear(env);
+    jclass throwableCls = (*env)->FindClass(env, "java/lang/Throwable");
+    if (throwableCls == NULL) { (*env)->ExceptionClear(env); return; }
+    jmethodID mToString = (*env)->GetMethodID(env, throwableCls, "toString", "()Ljava/lang/String;");
+    jmethodID mGetCause = (*env)->GetMethodID(env, throwableCls, "getCause", "()Ljava/lang/Throwable;");
+    jthrowable cur = exc;
+    for (int depth = 0; cur != NULL && depth < 5; depth++) {
+        jstring s = (jstring)(*env)->CallObjectMethod(env, cur, mToString);
+        if ((*env)->ExceptionOccurred(env)) { (*env)->ExceptionClear(env); break; }
+        if (s != NULL) {
+            const char *cs = (*env)->GetStringUTFChars(env, s, NULL);
+            NSLog(@"%s: %s%s", ctx, depth ? "caused by: " : "", cs);
+            (*env)->ReleaseStringUTFChars(env, s, cs);
+        }
+        cur = (jthrowable)(*env)->CallObjectMethod(env, cur, mGetCause);
+        if ((*env)->ExceptionOccurred(env)) { (*env)->ExceptionClear(env); break; }
+    }
+}
+
+// JNIEnv is thread-local: callbacks arrive on the UIKit main thread while
+// runtimeJNIEnvPtr belongs to whichever thread loaded the library. Always
+// resolve an env for the calling thread, attaching it to the VM if needed.
+static JNIEnv* getThreadJNIEnv() {
+    if (runtimeJavaVMPtr == NULL) return NULL;
+    JNIEnv *env = NULL;
+    (*runtimeJavaVMPtr)->GetEnv(runtimeJavaVMPtr, (void **)&env, JNI_VERSION_1_4);
+    if (env == NULL) {
+        (*runtimeJavaVMPtr)->AttachCurrentThreadAsDaemon(runtimeJavaVMPtr, (JNIEnv **)&env, NULL);
+    }
+    return env;
+}
+
+void ensureGLFWBridge() {
+    if (vmGlfwClass != NULL) return;
+    static int attempts = 0;
+    if (attempts >= 8) return;
+    attempts++;
+    JNIEnv *env = getThreadJNIEnv();
+    if (env == NULL) return;
+    jclass localGlfwClass = (*env)->FindClass(env, "org/lwjgl/glfw/GLFW");
+    logPendingException(env, "JNI_OnLoadGLFW: FindClass(GLFW) threw");
+    if (localGlfwClass == NULL) {
+        // FindClass in JNI_OnLoad resolves against the classloader of whichever
+        // class triggered the library load. MC 26.x's native bootstrap can do that
+        // from a loader that cannot see org.lwjgl, so retry via the system
+        // classloader - the LWJGL jar is always on the launch classpath.
+        NSLog(@"JNI_OnLoadGLFW: FindClass failed, retrying via system classloader");
+        jclass clCls = (*env)->FindClass(env, "java/lang/ClassLoader");
+        jclass classCls = (*env)->FindClass(env, "java/lang/Class");
+        if (clCls != NULL && classCls != NULL) {
+            jmethodID mSysCl = (*env)->GetStaticMethodID(env, clCls, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
+            jobject sysCl = (*env)->CallStaticObjectMethod(env, clCls, mSysCl);
+            jmethodID mForName = (*env)->GetStaticMethodID(env, classCls, "forName", "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;");
+            jstring name = (*env)->NewStringUTF(env, "org.lwjgl.glfw.GLFW");
+            if (mSysCl != NULL && sysCl != NULL && mForName != NULL && name != NULL) {
+                localGlfwClass = (jclass)(*env)->CallStaticObjectMethod(env, classCls, mForName, name, JNI_FALSE, sysCl);
+            }
+            logPendingException(env, "JNI_OnLoadGLFW: system classloader fallback threw");
+        } else {
+            (*env)->ExceptionClear(env);
+        }
+    }
+    if (localGlfwClass == NULL) {
+        NSLog(@"JNI_OnLoadGLFW: FindClass(org/lwjgl/glfw/GLFW) failed, aborting GLFW native init");
+        return;
+    }
+    vmGlfwClass = (*env)->NewGlobalRef(env, localGlfwClass);
+
+    method_internalWindowSizeChanged = (*env)->GetStaticMethodID(env, vmGlfwClass, "internalWindowSizeChanged", "(JII)V");
+    if (method_internalWindowSizeChanged == NULL) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+        NSLog(@"JNI_OnLoadGLFW: GetStaticMethodID(internalWindowSizeChanged) failed");
+    }
+
+    jfieldID field_keyDownBuffer = (*env)->GetStaticFieldID(env, vmGlfwClass, "keyDownBuffer", "Ljava/nio/ByteBuffer;");
+    if (field_keyDownBuffer == NULL) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+        NSLog(@"JNI_OnLoadGLFW: GetStaticFieldID(keyDownBuffer) failed, aborting GLFW native init");
+        return;
+    }
+    jobject keyDownBufferJ = (*env)->GetStaticObjectField(env, vmGlfwClass, field_keyDownBuffer);
+    keyDownBuffer = (*env)->GetDirectBufferAddress(env, keyDownBufferJ);
 }
 
 jint JNI_OnLoad(JavaVM* vm, void* reserved) {
@@ -225,7 +310,11 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved) {
     registerOpenHandler(env);
     if (!getenv("AME_SKIP_JNI_GLFW")) {
         runtimeJNIEnvPtr = env;
-        JNI_OnLoadGLFW();
+        // GLFW bridge setup is deferred to first use (ensureGLFWBridge).
+        // Doing it here can force org.lwjgl.glfw.GLFW.<clinit> while
+        // org.lwjgl.system.MemoryUtil is itself mid-init on this thread
+        // (MC 26.x native bootstrap), leaving MemoryUtil.UNSAFE null and
+        // permanently poisoning the GLFW class.
     }
 
     return JNI_VERSION_1_4;
@@ -259,8 +348,19 @@ ADD_CALLBACK_WWIN(WindowSize)
 void handleFramebufferSizeJava(void* window, int w, int h) {
     if(GLFW_invoke_CursorEnter)GLFW_invoke_CursorEnter(window, 1);
     if(GLFW_invoke_WindowPos)GLFW_invoke_WindowPos(window, 0, 0);
-    (*runtimeJNIEnvPtr)->CallStaticVoidMethod(runtimeJNIEnvPtr, vmGlfwClass, method_internalWindowSizeChanged, (long)window, w, h);
+    ensureGLFWBridge();
+    if (vmGlfwClass == NULL || method_internalWindowSizeChanged == NULL) return;
+    JNIEnv *env = getThreadJNIEnv();
+    if (env == NULL) return;
+    (*env)->CallStaticVoidMethod(env, vmGlfwClass, method_internalWindowSizeChanged, (long)window, w, h);
 }
+
+// producers run on the UIKit threads, glfwPollEvents on the render thread
+static os_unfair_lock eventLock = OS_UNFAIR_LOCK_INIT;
+// events taken for the current poll, every window gets the same list until rewind
+static GLFWInputEvent pollEvents[8000];
+static size_t pollCount;
+static BOOL pollTaken;
 
 void pojavPumpEvents(void* window) {
     static BOOL setInputReady = NO;
@@ -268,8 +368,19 @@ void pojavPumpEvents(void* window) {
         setInputReady = YES;
         CallbackBridge_nativeSetInputReady(YES);
     }
+    // Vulkan games submit on their own, so this is the only place to stop them while the app is inactive
+    if (AMVulkanNativeActive()) pojavWaitForAppForeground();
     //__android_log_print(ANDROID_LOG_INFO, "input_bridge_v3", "pojavPumpevents %d", eventCounter);
-    size_t counter = atomic_load_explicit(&eventCounter, memory_order_acquire);
+    if (!pollTaken) {
+        // draining here keeps events that land between pump and rewind for the next poll
+        os_unfair_lock_lock(&eventLock);
+        pollCount = atomic_load_explicit(&eventCounter, memory_order_acquire);
+        memcpy(pollEvents, events, pollCount * sizeof(GLFWInputEvent));
+        atomic_store_explicit(&eventCounter, 0, memory_order_release);
+        os_unfair_lock_unlock(&eventLock);
+        pollTaken = YES;
+    }
+    size_t counter = pollCount;
     if((cLastX != cursorX || cLastY != cursorY) && GLFW_invoke_CursorPos) {
         cLastX = cursorX;
         cLastY = cursorY;
@@ -277,13 +388,18 @@ void pojavPumpEvents(void* window) {
             GLFW_invoke_CursorPos(window, cursorX, cursorY);
     }
     for(size_t i = 0; i < counter; i++) {
-        GLFWInputEvent event = events[i];
+        GLFWInputEvent event = pollEvents[i];
         switch(event.type) {
             case EVENT_TYPE_CHAR:
                 if(GLFW_invoke_Char) GLFW_invoke_Char(window, event.i1);
                 break;
             case EVENT_TYPE_CHAR_MODS:
-                if(GLFW_invoke_CharMods) GLFW_invoke_CharMods(window, event.i1, event.i2);
+                if (GLFW_invoke_CharMods) {
+                    GLFW_invoke_CharMods(window, event.i1, event.i2);
+                } else if (GLFW_invoke_Char) {
+                    // Fallback to plain char callback when CharMods isn't available
+                    GLFW_invoke_Char(window, event.i1);
+                }
                 break;
             case EVENT_TYPE_KEY:
                 if(GLFW_invoke_Key) GLFW_invoke_Key(window, event.i1, event.i2, event.i3, event.i4);
@@ -304,10 +420,10 @@ void pojavPumpEvents(void* window) {
                 break;
         }
     }
-    atomic_store_explicit(&eventCounter, counter, memory_order_release);
 }
 void pojavRewindEvents() {
-    atomic_store_explicit(&eventCounter, 0, memory_order_release);
+    pollTaken = NO;
+    pollCount = 0;
 }
 
 JNIEXPORT void JNICALL
@@ -332,7 +448,8 @@ Java_org_lwjgl_glfw_GLFW_glfwSetCursorPos(JNIEnv *env, jclass clazz, jlong windo
 }
 
 void sendData(short type, int i1, int i2, short i3, short i4) {
-    size_t counter = atomic_load_explicit(&eventCounter, memory_order_acquire);
+    os_unfair_lock_lock(&eventLock);
+    size_t counter = atomic_load_explicit(&eventCounter, memory_order_relaxed);
     if (counter < 7999) {
         GLFWInputEvent *event = &events[counter++];
         event->type = type;
@@ -342,10 +459,12 @@ void sendData(short type, int i1, int i2, short i3, short i4) {
         event->i4 = i4;
     }
     atomic_store_explicit(&eventCounter, counter, memory_order_release);
+    os_unfair_lock_unlock(&eventLock);
 }
 
 void sendDataFloat(short type, float i1, float i2, short i3, short i4) {
-    size_t counter = atomic_load_explicit(&eventCounter, memory_order_acquire);
+    os_unfair_lock_lock(&eventLock);
+    size_t counter = atomic_load_explicit(&eventCounter, memory_order_relaxed);
     if (counter < 7999) {
         GLFWInputEvent *event = &events[counter++];
         event->type = type;
@@ -355,6 +474,7 @@ void sendDataFloat(short type, float i1, float i2, short i3, short i4) {
         event->i4 = i4;
     }
     atomic_store_explicit(&eventCounter, counter, memory_order_release);
+    os_unfair_lock_unlock(&eventLock);
 }
 
 void closeGLFWWindow() {
@@ -407,7 +527,7 @@ JNIEXPORT jstring JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeClipboard(JNI
 JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSetGrabbing(JNIEnv* env, jclass clazz, jboolean grabbing, jfloat xset, jfloat yset) {
     isGrabbing = grabbing;
     
-    if(grabbing) {
+    if (grabbing) {
         [MinecraftOptionUtils.sharedInstance updateMCGuiScale];
     }
 
@@ -415,6 +535,20 @@ JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSetGrabbing(JNIE
         SurfaceViewController *vc = ((SurfaceViewController *)UIWindow.mainWindow.rootViewController);
         [vc updateGrabState];
     });
+}
+
+JNIEXPORT jlong JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeGetCocoaView(
+    JNIEnv* env,
+    jclass clazz,
+    jlong window
+) {
+    GameSurfaceView *surface = [SurfaceViewController surface];
+
+    if (surface == nil) {
+        return (jlong)0;
+    }
+
+    return (jlong)(__bridge void *)surface;
 }
 
 JNIEXPORT jboolean JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeIsGrabbing(JNIEnv* env, jclass clazz) {
@@ -429,12 +563,16 @@ void CallbackBridge_nativeSetInputReady(BOOL inputReady) {
             GLFW_invoke_FramebufferSize((void*) showingWindow, windowWidth, windowHeight);
         }
         if (GLFW_invoke_WindowSize) {
-            GLFW_invoke_FramebufferSize((void*) showingWindow, windowWidth, windowHeight);
+            GLFW_invoke_WindowSize((void*) showingWindow, windowWidth, windowHeight);
         }
     }
 }
 
 BOOL CallbackBridge_nativeSendChar(jchar codepoint /* jint codepoint */) {
+    if (AmethystSDL3InputActive()) {
+        AmethystSDL3ForwardInput(AM_SDL_INPUT_CHAR, codepoint, 0, 0, 0, 0, 0);
+        return YES;
+    }
     if (GLFW_invoke_Char && isInputReady) {
         if (isUseStackQueueCall) {
             sendData(EVENT_TYPE_CHAR, codepoint, 0, 0, 0);
@@ -448,11 +586,20 @@ BOOL CallbackBridge_nativeSendChar(jchar codepoint /* jint codepoint */) {
 }
 
 BOOL CallbackBridge_nativeSendCharMods(jchar codepoint, int mods) {
-    if (GLFW_invoke_CharMods && isInputReady) {
+    if (AmethystSDL3InputActive()) {
+        AmethystSDL3ForwardInput(AM_SDL_INPUT_CHAR, codepoint, 0, 0, 0, 0, 0);
+        return YES;
+    }
+    // Accept either CharMods or Char as targets — fall back to Char when necessary
+    if ((GLFW_invoke_CharMods || GLFW_invoke_Char) && isInputReady) {
         if (isUseStackQueueCall) {
             sendData(EVENT_TYPE_CHAR_MODS, (unsigned int) codepoint, mods, 0, 0);
         } else {
-            GLFW_invoke_CharMods((void*) showingWindow, codepoint, mods);
+            if (GLFW_invoke_CharMods) {
+                GLFW_invoke_CharMods((void*) showingWindow, codepoint, mods);
+            } else {
+                GLFW_invoke_Char((void*) showingWindow, (unsigned int) codepoint);
+            }
         }
         return YES;
     }
@@ -466,6 +613,18 @@ JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSendCursorEnter(
 }
 */
 void CallbackBridge_nativeSendCursorPos(char event, CGFloat x, CGFloat y) {
+    if (AmethystSDL3InputActive()) {
+        if (!isGrabbing && windowWidth > 0 && windowHeight > 0) {
+            // absolute position: send it as a 0..1 fraction of the game window, java scales it to
+            // whatever size SDL reports for its window (b=1 means normalized)
+            AmethystSDL3ForwardInput(AM_SDL_INPUT_CURSOR, event, 1, 0, 0, (float)(x / windowWidth), (float)(y / windowHeight));
+            return;
+        }
+        // grabbed (camera): send the raw pixel deltas, same units the old GLFW path gave minecraft.
+        // dividing by the screen scale made the camera ~3x slower than before
+        AmethystSDL3ForwardInput(AM_SDL_INPUT_CURSOR, event, 0, 0, 0, (float)x, (float)y);
+        return;
+    }
     if (!GLFW_invoke_CursorPos || !isInputReady) return;
 
     switch (event) {
@@ -529,8 +688,13 @@ char getKeyModifiers(int key, int action) {
 }
 
 void CallbackBridge_nativeSendKey(int key, int scancode, int action, int mods) {
+    if (AmethystSDL3InputActive()) {
+        // no return: the ctrl -> super duplication below still applies
+        AmethystSDL3ForwardInput(AM_SDL_INPUT_KEY, key, scancode, action, mods != 0 ? mods : getKeyModifiers(key, action), 0, 0);
+    }
     if (GLFW_invoke_Key && isInputReady) {
-        keyDownBuffer[MAX(0, key-31)]=(jbyte)action;
+        if (keyDownBuffer == NULL) ensureGLFWBridge();
+        if (keyDownBuffer != NULL) keyDownBuffer[MAX(0, key-31)]=(jbyte)action;
         if (mods == 0) {
             mods = getKeyModifiers(key, action);
         }
@@ -551,6 +715,10 @@ void CallbackBridge_nativeSendKey(int key, int scancode, int action, int mods) {
 }
 
 void CallbackBridge_nativeSendMouseButton(int button, int action, int mods) {
+    if (AmethystSDL3InputActive()) {
+        AmethystSDL3ForwardInput(AM_SDL_INPUT_BUTTON, button, action, 0, 0, 0, 0);
+        return;
+    }
     if (isInputReady) {
         if (button == -1) {
         } else if (GLFW_invoke_MouseButton) {
@@ -570,6 +738,9 @@ void CallbackBridge_nativeSendMouseButton(int button, int action, int mods) {
 void CallbackBridge_nativeSendScreenSize(int width, int height) {
     windowWidth = width;
     windowHeight = height;
+
+    // SDL path: lets java pick up a resolution change made while the game is running
+    AmethystSDL3ForwardInput(AM_SDL_INPUT_SCREEN, width, height, 0, 0, 0, 0);
     
     if (isInputReady) {
         if (GLFW_invoke_FramebufferSize) {
@@ -592,6 +763,10 @@ void CallbackBridge_nativeSendScreenSize(int width, int height) {
 }
 
 void CallbackBridge_nativeSendScroll(CGFloat xoffset, CGFloat yoffset) {
+    if (AmethystSDL3InputActive()) {
+        AmethystSDL3ForwardInput(AM_SDL_INPUT_SCROLL, 0, 0, 0, 0, (float)xoffset, (float)yoffset);
+        return;
+    }
     if (GLFW_invoke_Scroll && isInputReady) {
         if (isUseStackQueueCall) {
             sendDataFloat(EVENT_TYPE_SCROLL, xoffset, yoffset, 0, 0);

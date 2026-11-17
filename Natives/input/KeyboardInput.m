@@ -2,6 +2,7 @@
 #import "../utils.h"
 
 #include "../glfw_keycodes.h"
+#include "../sdl3_hook.h"
 
 @implementation KeyboardInput
 
@@ -89,6 +90,10 @@ int keycodeTable[UIKeyboardHIDUsageKeyboardRightGUI+1];
 }
 
 + (BOOL)sendKeyEvent:(UIKey *)key down:(BOOL)isDown {
+    return [self sendKeyEvent:key down:isDown textFieldActive:NO];
+}
+
++ (BOOL)sendKeyEvent:(UIKey *)key down:(BOOL)isDown textFieldActive:(BOOL)textFieldActive {
     char modifiers = 0;
 
     // convert UIKey's modifiers to GLFW
@@ -107,6 +112,9 @@ int keycodeTable[UIKeyboardHIDUsageKeyboardRightGUI+1];
 
     // send the keycode
     int keycode = keycodeTable[key.keyCode];
+    if (textFieldActive && (keycode == GLFW_KEY_BACKSPACE || keycode == GLFW_KEY_ENTER)) {
+        return YES;
+    }
     if (keycode != 0) {
         CallbackBridge_nativeSendKey(keycode, 0 /* scancode */, isDown, modifiers);
     } else {
@@ -114,9 +122,15 @@ int keycodeTable[UIKeyboardHIDUsageKeyboardRightGUI+1];
     }
 
     // key.characters.length < 11: skip sending characters if the string starts with UIKeyInput
-    if (isDown && key.characters.length < 11) {
+    if (isDown && !textFieldActive && key.characters.length < 11) {
         for (int i = 0; i < key.characters.length; i++) {
             int keychar = [key.characters characterAtIndex:i];
+            if (AmethystSDL3InputActive()) {
+                if (keychar >= 0x20 && keychar != 0x7F) {
+                    CallbackBridge_nativeSendChar(keychar);
+                }
+                continue;
+            }
             CallbackBridge_nativeSendCharMods(keychar, modifiers);
             CallbackBridge_nativeSendChar(keychar);
         }

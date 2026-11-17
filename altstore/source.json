@@ -1,0 +1,54 @@
+{
+  "name": "CH33ZE Apps",
+  "identifier": "com.ch33ze.source",
+  "apps": [
+    {
+      "name": "Amethyst Duo",
+      "bundleIdentifier": "org.angelauramc.amethyst",
+      "developerName": "CH33ZE (fork of AngelAuraMC)",
+      "subtitle": "Minecraft Java for iPhone Duo",
+      "localizedDescription": "Amethyst with iPhone Duo fold support: game on top and controls on the bottom when half folded, fullscreen when open.",
+      "iconURL": "https://raw.githubusercontent.com/CH33ZELOUIZ/Amethyst-iOS/duo-optimized/altstore/amethyst-duo.png",
+      "tintColor": "7B3FE4",
+      "versions": [
+        {
+          "version": "1.0.9",
+          "date": "2026-11-16",
+          "downloadURL": "https://github.com/CH33ZELOUIZ/Amethyst-iOS/releases/download/duo-9/Amethyst-Duo-9.ipa",
+          "size": 218373508,
+          "sha256": "98acf60f7a41b21291d65e759b5a871796679c242b46bbb69b2d86b49309ab54",
+          "minOSVersion": "14.0"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {}
+      }
+    },
+    {
+      "name": "AltStore Duo",
+      "bundleIdentifier": "io.altstore.AltStore",
+      "developerName": "CH33ZE (fork of AltStore)",
+      "subtitle": "Duo-optimized app sideloading",
+      "localizedDescription": "AltStore optimized for iPhone Duo on iOS 27.1+. Uses the system fold division region to keep the app interface aware of the physical crease. Unsigned IPA: install through AltStore or SideStore.",
+      "iconURL": "https://raw.githubusercontent.com/CH33ZELOUIZ/Amethyst-iOS/duo-optimized/altstore/altstore-duo.png",
+      "tintColor": "197C89",
+      "versions": [
+        {
+          "version": "2.3.12",
+          "date": "2026-11-16",
+          "downloadURL": "https://github.com/CH33ZELOUIZ/AltStore/releases/download/altstore-duo-2/AltStore-Duo-unsigned.ipa",
+          "size": 53851505,
+          "sha256": "614d672ee8dc4e13e5582fef7557b40ac291e651b2ea3dade5a1d8940701c41e",
+          "minOSVersion": "17.4"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {}
+      }
+    }
+  ],
+  "news": [],
+  "iconURL": "https://raw.githubusercontent.com/CH33ZELOUIZ/Amethyst-iOS/duo-optimized/altstore/ptw-logo.png"
+}

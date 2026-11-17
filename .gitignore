@@ -13,4 +13,6 @@ xcuserdata/
 project.xcworkspace/
 /depends
 /Natives/config.h
+*.duo-pack.zip
 entitlements.codesign.xml
+__pycache__/

@@ -2,6 +2,7 @@
 
 #import "authenticator/BaseAuthenticator.h"
 #import "installer/modpack/ModpackAPI.h"
+#import "installer/modpack/OfflineModpackImporter.h"
 #import "AFNetworking.h"
 #import "LauncherNavigationController.h"
 #import "LauncherPreferences.h"
@@ -12,6 +13,7 @@
 
 @interface MinecraftResourceDownloadTask ()
 @property AFURLSessionManager* manager;
+@property(nonatomic) BOOL terminal;
 @end
 
 @implementation MinecraftResourceDownloadTask
@@ -29,13 +31,16 @@
 }
 
 // Add file to the queue
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)())success {
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path forceSHA:(BOOL)forceSHA success:(void (^)())success failure:(void (^)(NSError *error))failure {
     BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
-    // logSuccess?
-    if (fileExists && [self checkSHA:sha forFile:path altName:altName]) {
+    BOOL (^verify)(void) = ^BOOL {
+        return forceSHA ? [self checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:altName == nil] : [self checkSHA:sha forFile:path altName:altName];
+    };
+    if (fileExists && verify()) {
         if (success) success();
         return nil;
     } else if (![self checkAccessWithDialog:YES]) {
+        if (failure) failure([NSError errorWithDomain:@"MinecraftResourceDownload" code:NSURLErrorUserAuthenticationRequired userInfo:nil]);
         return nil;
     }
 
@@ -58,8 +63,11 @@
             // Ignore any further errors
         } else if (error != nil) {
             [self finishDownloadWithError:error file:name];
-        } else if (![self checkSHA:sha forFile:path altName:altName]) {
-            [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
+            if (failure) failure(error);
+        } else if (!verify()) {
+            NSError *verificationError = [NSError errorWithDomain:@"MinecraftResourceDownload" code:NSURLErrorCannotDecodeContentData userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]}];
+            [self finishDownloadWithError:verificationError file:name];
+            if (failure) failure(verificationError);
         } else {
             progress.totalUnitCount = progress.completedUnitCount;
             if (success) success();
@@ -72,6 +80,10 @@
     }
 
     return task;
+}
+
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)())success {
+    return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path forceSHA:NO success:success failure:nil];
 }
 
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path {
@@ -282,9 +294,48 @@
     [task resume];
 }
 
+- (void)installModpackFromLocalFile:(NSString *)filePath api:(ModpackAPI *)api {
+    [self prepareForDownload];
+    [self reportPhase:@"Checking selected pack"];
+    if ([OfflineModpackImporter isOfflinePackAtPath:filePath]) {
+        [OfflineModpackImporter importPackAtPath:filePath downloader:self];
+        return;
+    }
+    NSString *name = [[filePath.lastPathComponent stringByDeletingPathExtension] lowercaseString];
+    if ([name hasPrefix:@"import-"]) name = [name substringFromIndex:7];
+    name = [[name stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet] stringByReplacingOccurrencesOfString:@" " withString:@"_"];
+    NSString *path = [NSString stringWithFormat:@"%s/custom_gamedir/%@", getenv("GAME_DIR"), name];
+    NSLog(@"[ModpackImport] Unpacking %@ into %@", filePath, path);
+    // Mirror the remote flow: there the finished .mrpack download is a completed child progress.
+    unsigned long long pkgSize = [[NSFileManager.defaultManager attributesOfItemAtPath:filePath error:nil] fileSize];
+    if (pkgSize == 0) pkgSize = 1;
+    NSProgress *pkgProgress = [NSProgress progressWithTotalUnitCount:(int64_t)pkgSize];
+    pkgProgress.completedUnitCount = (int64_t)pkgSize;
+    [self.progress addChild:pkgProgress withPendingUnitCount:(int64_t)pkgSize];
+    [api downloader:self submitDownloadTasksFromPackage:filePath toPath:path];
+}
+
 #pragma mark - Utilities
 
+- (void)prepareProgressForObservation {
+    [self prepareForDownload];
+    self.progressPrepared = YES;
+}
+
+- (void)reportPhase:(NSString *)phase {
+    NSLog(@"[ModpackImport] Phase: %@", phase);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.phase = phase;
+        if (self.phaseHandler) self.phaseHandler(phase);
+    });
+}
+
 - (void)prepareForDownload {
+    if (self.progressPrepared) {
+        // The UI already observes these objects; replacing them would silence it.
+        self.progressPrepared = NO;
+        return;
+    }
     // Create a fake progress which is used to update completedUnitCount properly
     // (completedUnitCount does not update unless subprogress completes)
     self.textProgress = [NSProgress new];
@@ -299,11 +350,45 @@
     [self.progressList removeAllObjects];
 }
 
+- (void)finishDownloadWithSuccess {
+    @synchronized (self) {
+        if (self.terminal) return;
+        if (self.progress.cancelled) {
+            // A worker can finish just after the user presses Cancel; cancellation wins.
+            self.terminal = YES;
+            return;
+        }
+        self.terminal = YES;
+    }
+    // Success is signaled by the overall NSProgress finishing; the launcher UI
+    // observes progress.finished to dismiss the download popover and reload profiles.
+    if (self.progress.totalUnitCount < 1) {
+        self.progress.totalUnitCount = 1;
+    }
+    self.progress.completedUnitCount = self.progress.totalUnitCount;
+}
+
+- (void)cancel {
+    [self finishDownloadWithErrorString:@"Private pack import was cancelled."];
+}
+
 - (void)finishDownloadWithErrorString:(NSString *)error {
+    @synchronized (self) {
+        if (self.terminal) return;
+        self.terminal = YES;
+    }
+    NSLog(@"[ModpackImport] Failed: %@", error);
     [self.progress cancel];
     [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
-    showDialog(localize(@"Error", nil), error);
-    self.handleError();
+    NSString *title = localize(@"Error", nil);
+    void (^handler)(void) = self.handleError;
+    // UIKit (dialogs, UI state reset) must only be touched from the main queue.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.phase = nil;
+        self.lastErrorSummary = error;
+        showDialog(title, error);
+        if (handler) handler();
+    });
 }
 
 - (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {

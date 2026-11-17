@@ -73,7 +73,7 @@ public class PojavLauncher {
             }
         }
 
-        System.setProperty("org.lwjgl.vulkan.libname", "libMoltenVK.dylib");
+        System.setProperty("org.lwjgl.vulkan.libname", System.getProperty("ame.vulkan.libpath", "libMoltenVK.dylib"));
 
         MinecraftAccount account = MinecraftAccount.load(args[0]);
         JMinecraftVersionList.Version version = Tools.getVersionInfo(args[1]);
@@ -86,6 +86,11 @@ public class PojavLauncher {
                 configPath = Tools.DIR_BUNDLE + "/log4j-rce-patch-1.7.xml";
             } else {
                 configPath = Tools.DIR_GAME_NEW + "/" + version.logging.client.file.id;
+            }
+            if (!new File(configPath).isFile()) {
+                // missing config makes log4j go silent
+                String fallback = System.getProperty("amethyst.log4jConfig");
+                if (fallback != null) configPath = fallback;
             }
             System.setProperty("log4j.configurationFile", configPath);
         }

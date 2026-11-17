@@ -149,11 +149,19 @@
         }
     }
 
-    // Check if one has enable condition and call if it does
+    // Check if one has enable condition and call if it does. Disabled controls
+    // must explain the current capability/state limitation to VoiceOver users too.
     BOOL(^checkEnable)(void) = item[@"enableCondition"];
     cell.userInteractionEnabled = !checkEnable || checkEnable();
     cell.textLabel.enabled = cell.detailTextLabel.enabled = cell.userInteractionEnabled;
     [(id)cell.accessoryView setEnabled:cell.userInteractionEnabled];
+    if (!cell.userInteractionEnabled) {
+        NSString *reasonKey = item[@"disabledReason"] ?: @"duo.settings.unavailable";
+        cell.detailTextLabel.text = localize(reasonKey, nil);
+        cell.accessibilityHint = cell.detailTextLabel.text;
+    } else {
+        cell.accessibilityHint = nil;
+    }
 
     return cell;
 }

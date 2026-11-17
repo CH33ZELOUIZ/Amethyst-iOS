@@ -185,7 +185,7 @@ typedef void(^XSTSCallback)(NSString *xsts, NSString *uhs);
             [uuid substringWithRange:NSMakeRange(16, 4)],
             [uuid substringWithRange:NSMakeRange(20, 12)]
         ];
-        self.authData[@"profilePicURL"] = [NSString stringWithFormat:@"https://mc-heads.net/head/%@/120", self.authData[@"profileId"]];
+        self.authData[@"profilePicURL"] = [NSString stringWithFormat:@"https://mc-heads.net/head/%@/120.png", uuid];
         self.authData[@"oldusername"] = self.authData[@"username"];
         self.authData[@"username"] = response[@"name"];
         callback(nil, [self saveChanges]);
@@ -262,7 +262,8 @@ typedef void(^XSTSCallback)(NSString *xsts, NSString *uhs);
     OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)dict, &resultData);
     if (status == errSecSuccess) {
         NSError *error = nil;
-        NSDictionary *result = [NSKeyedUnarchiver unarchivedObjectOfClasses:@[NSDictionary.class, NSString.class] fromData:(__bridge NSData *)resultData error:nil];
+        NSSet *classes = [NSSet setWithObjects:NSDictionary.class, NSString.class, nil];
+        NSDictionary *result = [NSKeyedUnarchiver unarchivedObjectOfClasses:classes fromData:(__bridge NSData *)resultData error:&error];
         if (error) {
             NSDebugLog(@"[MicrosoftAuthenticator] Failed to unarchive token data: %@", error);
         }

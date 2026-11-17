@@ -3,6 +3,7 @@
 #import "utils.h"
 
 static PLProfiles* current;
+NSNotificationName const PLProfilesDidChangeNotification = @"PLProfilesDidChange";
 
 @interface PLProfiles()
 @end
@@ -30,6 +31,7 @@ static PLProfiles* current;
 
 + (void)updateCurrent {
     current = [[PLProfiles alloc] initWithCurrentInstance];
+    [NSNotificationCenter.defaultCenter postNotificationName:PLProfilesDidChangeNotification object:current];
 }
 
 + (id)profile:(NSMutableDictionary *)profile resolveKey:(id)key {
@@ -76,6 +78,10 @@ static PLProfiles* current;
     return self.profileDict[@"profiles"];
 }
 
+- (NSArray<NSString *> *)sortedProfileNames {
+    return [[self.profiles allKeys] sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)];
+}
+
 - (id)selectedProfile {
     return self.profiles[self.selectedProfileName];
 }
@@ -87,10 +93,17 @@ static PLProfiles* current;
 - (void)setSelectedProfileName:(NSString *)name {
     self.profileDict[@"selectedProfile"] = (id)name;
     [self save];
+    [NSNotificationCenter.defaultCenter postNotificationName:PLProfilesDidChangeNotification object:self];
 }
 
 - (void)save {
-    saveJSONToFile(self.profileDict, self.profilePath);
+    [self save:nil];
+}
+
+- (BOOL)save:(NSError **)error {
+    NSError *saveError = saveJSONToFile(self.profileDict, self.profilePath);
+    if (saveError && error) *error = saveError;
+    return saveError == nil;
 }
 
 @end

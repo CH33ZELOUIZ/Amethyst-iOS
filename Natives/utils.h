@@ -3,7 +3,9 @@
 #import <UIKit/UIKit.h>
 
 #include <stdbool.h>
+#include <string.h>
 #include "environ.h"
+#include "renderer_info.h"
 #include "jni.h"
 
 // Remove date + time from NSLog, unneeded
@@ -34,10 +36,6 @@
 #define GLFW_FOCUSED 0x00020001
 #define GLFW_VISIBLE 0x00020004
 
-#define RENDERER_NAME_GL4ES "libgl4es_114.dylib"
-#define RENDERER_NAME_MTL_ANGLE "libtinygl4angle.dylib"
-#define RENDERER_NAME_MOBILEGLUES "libmobileglues.dylib"
-#define RENDERER_NAME_VK_ZINK "libOSMesa.8.dylib"
 
 #define SPECIALBTN_KEYBOARD -1
 #define SPECIALBTN_TOGGLECTRL -2
@@ -76,6 +74,9 @@ typedef enum {
 } JITFlags;
 JITFlags DeviceGetJITFlags(BOOL refresh);
 BOOL DeviceHasJITFlags(JITFlags flags);
+
+void pojavSetAppForeground(BOOL foreground);
+void pojavWaitForAppForeground(void);
 
 // Init functions
 void init_bypassDyldLibValidation();
