@@ -103,6 +103,7 @@ static ModpackInstallViewController *gPickerOwner;
     NSString *dest = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"import-" stringByAppendingString:src.lastPathComponent]];
     [NSFileManager.defaultManager removeItemAtPath:dest error:nil];
     NSError *error;
+    NSLog(@"[ModpackImport] Copying local pack into app temp storage");
     [NSFileManager.defaultManager copyItemAtPath:src toPath:dest error:&error];
     if (error) {
         showDialog(localize(@"Error", nil), error.localizedDescription);
@@ -171,7 +172,9 @@ static ModpackInstallViewController *gPickerOwner;
     NSString *dest = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"import-" stringByAppendingString:url.lastPathComponent]];
     [NSFileManager.defaultManager removeItemAtPath:dest error:nil];
     NSError *error;
+    NSLog(@"[ModpackImport] Copying selected pack from Files/iCloud into app temp storage");
     [NSFileManager.defaultManager copyItemAtPath:url.path toPath:dest error:&error];
+    NSLog(@"[ModpackImport] Copy finished (error: %@)", error ? @"yes" : @"no");
     if (error) {
         showDialog(localize(@"Error", nil), error.localizedDescription);
         return;

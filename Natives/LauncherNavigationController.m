@@ -29,6 +29,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 }
 
 @property(nonatomic) MinecraftResourceDownloadTask* task;
+@property(nonatomic) NSProgress* observedTaskProgress;
 @property(nonatomic) UINavigationController* progressVC;
 @property(nonatomic) NSArray* globalToolbarItems;
 @property(nonatomic) PLPickerView* versionPickerView;
@@ -376,11 +377,14 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.progressText.text = progress.localizedAdditionalDescription;
+        NSString *phase = self.task.phase;
+        NSString *detail = progress.localizedAdditionalDescription;
+        self.progressText.text = phase.length ? (detail.length ? [NSString stringWithFormat:@"%@ — %@", phase, detail] : phase) : detail;
 
         if (!progress.finished) return;
         [self.progressVC dismissModalViewControllerAnimated:NO];
 
+        [self detachProgressObserver];
         self.progressViewMain.observedProgress = nil;
         if (self.task.metadata) {
             __block NSDictionary *metadata = self.task.metadata;
@@ -399,31 +403,63 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     if (![notification.name isEqualToString:@"InstallModpack"]) {
         return;
     }
-    [self setInteractionEnabled:NO forDownloading:YES];
-    self.task = [MinecraftResourceDownloadTask new];
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self receiveNotification:notification]; });
+        return;
+    }
     NSDictionary *userInfo = notification.userInfo;
+    BOOL isLocal = userInfo[@"localPath"] != nil;
+    [self setInteractionEnabled:NO forDownloading:YES];
+    self.progressText.text = isLocal ? @"Preparing private pack import…" : nil;
+    self.task = [MinecraftResourceDownloadTask new];
+    MinecraftResourceDownloadTask *task = self.task;
+    __weak LauncherNavigationController *weakSelf = self;
+    task.handleError = ^{
+        // Always invoked on the main queue by finishDownloadWithErrorString.
+        LauncherNavigationController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf detachProgressObserver];
+        strongSelf.progressViewMain.observedProgress = nil;
+        [strongSelf.progressVC dismissViewControllerAnimated:NO completion:nil];
+        [strongSelf setInteractionEnabled:YES forDownloading:YES];
+        strongSelf.task = nil;
+        strongSelf.progressVC = nil;
+    };
+    task.phaseHandler = ^(NSString *phase) {
+        LauncherNavigationController *strongSelf = weakSelf;
+        if (strongSelf && strongSelf.task == task) strongSelf.progressText.text = phase;
+    };
+    // Create the progress and attach the observer BEFORE any import work starts, so the
+    // UI reflects preflight/checksum/extraction/install instead of staying silent.
+    [task prepareProgressForObservation];
+    [task reportPhase:isLocal ? @"Starting private pack import" : @"Starting modpack download"];
+    [self attachProgressObserverForTask:task];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        __weak LauncherNavigationController *weakSelf = self;
-        self.task.handleError = ^{
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [weakSelf setInteractionEnabled:YES forDownloading:YES];
-                weakSelf.task = nil;
-                weakSelf.progressVC = nil;
-            });
-        };
-        if (userInfo[@"localPath"]) {
-            [self.task installModpackFromLocalFile:userInfo[@"localPath"] api:notification.object];
+        if (isLocal) {
+            [task installModpackFromLocalFile:userInfo[@"localPath"] api:notification.object];
         } else {
-            [self.task downloadModpackFromAPI:notification.object detail:userInfo[@"detail"] atIndex:[userInfo[@"index"] unsignedLongValue]];
+            [task downloadModpackFromAPI:notification.object detail:userInfo[@"detail"] atIndex:[userInfo[@"index"] unsignedLongValue]];
         }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self.progressViewMain.observedProgress = self.task.progress;
-            [self.task.progress addObserver:self
-                forKeyPath:@"fractionCompleted"
-                options:NSKeyValueObservingOptionInitial
-                context:ProgressObserverContext];
-        });
     });
+}
+
+- (void)attachProgressObserverForTask:(MinecraftResourceDownloadTask *)task {
+    NSAssert(NSThread.isMainThread, @"progress observer must be attached on the main queue");
+    [self detachProgressObserver];
+    self.progressViewMain.observedProgress = task.progress;
+    self.observedTaskProgress = task.progress;
+    [task.progress addObserver:self
+        forKeyPath:@"fractionCompleted"
+        options:NSKeyValueObservingOptionInitial
+        context:ProgressObserverContext];
+}
+
+- (void)detachProgressObserver {
+    NSProgress *observed = self.observedTaskProgress;
+    if (!observed) return;
+    self.observedTaskProgress = nil;
+    @try { [observed removeObserver:self forKeyPath:@"fractionCompleted" context:ProgressObserverContext]; }
+    @catch (NSException *exception) { NSLog(@"[ModpackImport] progress observer already removed"); }
 }
 
 - (void)invokeAfterJITEnabled:(void(^)(void))handler {

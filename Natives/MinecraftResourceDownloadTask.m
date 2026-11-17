@@ -295,6 +295,7 @@
 
 - (void)installModpackFromLocalFile:(NSString *)filePath api:(ModpackAPI *)api {
     [self prepareForDownload];
+    [self reportPhase:@"Checking selected pack"];
     if ([OfflineModpackImporter isOfflinePackAtPath:filePath]) {
         [OfflineModpackImporter importPackAtPath:filePath downloader:self];
         return;
@@ -315,7 +316,25 @@
 
 #pragma mark - Utilities
 
+- (void)prepareProgressForObservation {
+    [self prepareForDownload];
+    self.progressPrepared = YES;
+}
+
+- (void)reportPhase:(NSString *)phase {
+    NSLog(@"[ModpackImport] Phase: %@", phase);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.phase = phase;
+        if (self.phaseHandler) self.phaseHandler(phase);
+    });
+}
+
 - (void)prepareForDownload {
+    if (self.progressPrepared) {
+        // The UI already observes these objects; replacing them would silence it.
+        self.progressPrepared = NO;
+        return;
+    }
     // Create a fake progress which is used to update completedUnitCount properly
     // (completedUnitCount does not update unless subprogress completes)
     self.textProgress = [NSProgress new];
@@ -340,10 +359,17 @@
 }
 
 - (void)finishDownloadWithErrorString:(NSString *)error {
+    NSLog(@"[ModpackImport] Failed: %@", error);
     [self.progress cancel];
     [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
-    showDialog(localize(@"Error", nil), error);
-    self.handleError();
+    NSString *title = localize(@"Error", nil);
+    void (^handler)(void) = self.handleError;
+    // UIKit (dialogs, UI state reset) must only be touched from the main queue.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.phase = nil;
+        showDialog(title, error);
+        if (handler) handler();
+    });
 }
 
 - (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {
