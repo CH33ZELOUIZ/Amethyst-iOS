@@ -5,6 +5,7 @@
 #import "PLProfiles.h"
 #import "OfflineModpackImporter.h"
 #import "ModpackUtils.h"
+#import "OfflineVanillaSeed.h"
 
 static const unsigned long long OfflineMaxEntries = 12000;
 static const unsigned long long OfflineMaxBytes = 2ULL * 1024 * 1024 * 1024;
@@ -296,6 +297,9 @@ static uint32_t OfflineLE32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32
     NSString *installerRoot = [[gameDir stringByAppendingPathComponent:@"custom_gamedir"] stringByAppendingPathComponent:[NSString stringWithFormat:@".offline-neoforge-%@", NSUUID.UUID.UUIDString]];
     [NSFileManager.defaultManager removeItemAtPath:installerRoot error:nil];
     if (![NSFileManager.defaultManager createDirectoryAtPath:installerRoot withIntermediateDirectories:YES attributes:nil error:&error]) { [NSFileManager.defaultManager removeItemAtPath:staging error:nil]; [downloader finishDownloadWithErrorString:error.localizedDescription]; return; }
+    // NeoForge ClientInstall needs vanilla prerequisites in its root: seed only verified regular files from GAME_DIR.
+    char seedError[512] = {0};
+    if (OfflineSeedVanillaRoot(gameDir.fileSystemRepresentation, installerRoot.fileSystemRepresentation, minecraft.UTF8String, seedError, sizeof seedError) != 0) { [NSFileManager.defaultManager removeItemAtPath:installerRoot error:nil]; [NSFileManager.defaultManager removeItemAtPath:staging error:nil]; [downloader finishDownloadWithErrorString:@(seedError)]; return; }
     __block BOOL installed = NO; __block NSString *installError = nil;
     // Install in a disposable root: GAME_DIR is untouched until the verified output is published.
     launchNeoForgeInstaller(installer, profileID, installerRoot, ^(BOOL success, NSString *message) { installed = success; installError = message; });

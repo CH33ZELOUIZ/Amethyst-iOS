@@ -143,6 +143,7 @@ add_executable(AngelAuraAmethyst
   installer/FabricUtils.m
   installer/modpack/ModpackUtils.m
   installer/modpack/OfflineModpackImporter.m
+  installer/modpack/OfflineVanillaSeed.c
   installer/modpack/ModpackAPI.m
   installer/modpack/CurseForgeAPI.m
   installer/modpack/ModrinthAPI.m
