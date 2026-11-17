@@ -15,6 +15,7 @@ import tempfile
 from typing import NoReturn
 import zipfile
 
+ROOT = Path(__file__).resolve().parents[1]
 CHUNK = 1024 * 1024
 EXCLUDE = {"SHA256SUMS.txt", "SOURCE-SHA256SUMS.txt", "INVENTORY.json", "INVENTORY.md", "duo-offline-pack.json"}
 MAX_ENTRIES = 12000
@@ -69,12 +70,17 @@ def validate_control(control: object, checksums: dict[str, str], payload_bytes: 
         fail("control manifest is not an object")
     profile_name = control.get("profileName")
     neoforge = control.get("neoforge")
+    minimum_ram = control.get("minimumRamMiB")
+    desktop_recommended_ram = control.get("desktopRecommendedRamMiB")
     safe_version_characters = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
     if (not isinstance(profile_name, str) or len(PurePosixPath(profile_name).parts) != 1 or not is_safe_relative_path(profile_name)
             or not isinstance(neoforge, str) or not neoforge.startswith("neoforge-") or len(neoforge) == len("neoforge-")
             or any(character not in safe_version_characters for character in neoforge)
             or control.get("format") != "amethyst-duo-offline-pack" or control.get("formatVersion") != 1
             or not isinstance(control.get("minecraftVersion"), str) or not isinstance(control.get("sha256sumsSHA256"), str)
+            or not isinstance(minimum_ram, int) or not isinstance(desktop_recommended_ram, int)
+            or minimum_ram < 4096 or desktop_recommended_ram < 6016
+            or desktop_recommended_ram < minimum_ram
             or control.get("fileCount") != len(checksums) or control.get("payloadBytes") != payload_bytes
             or control.get("payloadBytes", 0) > MAX_PAYLOAD_BYTES
             or control.get("sha256sumsSHA256") != hashlib.sha256(sums).hexdigest()):
@@ -149,6 +155,8 @@ def main():
     output = args.output.resolve()
     if not source.is_dir() or output.is_relative_to(source):
         fail("source must be a directory and output must be outside it")
+    if output.is_relative_to(ROOT):
+        fail("private pack output must be outside the repository top-level")
     records = [(digest(path), relative, path.stat().st_size, path) for path, relative in files(source)]
     if not records:
         fail("source has no payload files")

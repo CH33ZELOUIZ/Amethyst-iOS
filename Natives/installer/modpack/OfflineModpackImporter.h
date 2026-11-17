@@ -4,9 +4,9 @@
 
 @interface OfflineModpackImporter : NSObject
 
-// Imports a private Duo offline pack from an extracted folder or a ZIP. The pack
-// must contain duo-offline-pack.json and SHA256SUMS.txt at its root.
+// Imports a private Duo offline ZIP containing the control and checksum manifests.
 + (void)importPackAtPath:(NSString *)sourcePath downloader:(MinecraftResourceDownloadTask *)downloader;
 + (BOOL)isOfflinePackAtPath:(NSString *)path;
++ (NSDictionary<NSString *, NSNumber *> *)requirementsForOfflinePackAtPath:(NSString *)path;
 
 @end

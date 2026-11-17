@@ -634,12 +634,22 @@ void launchNeoForgeInstaller(NSString *installerPath, NSString *versionID, NSStr
         return;
     }
 
+    NSString *versionJSON = [NSString stringWithFormat:@"%@/versions/%@/%@.json", installationDirectory, versionID, versionID];
+    // A pre-existing version file must never make a no-op installer look successful.
+    if ([NSFileManager.defaultManager fileExistsAtPath:versionJSON]) {
+        completion(NO, @"NeoForge version metadata already exists; install must run in a fresh isolated staging root.");
+        return;
+    }
     int result = launchJVMWithJarArguments(nil, installerPath, windowWidth, windowHeight, 21,
                                            @[@"--installClient", installationDirectory]);
-    NSString *versionJSON = [NSString stringWithFormat:@"%@/versions/%@/%@.json", installationDirectory, versionID, versionID];
-    BOOL installed = result == 0 && [NSFileManager.defaultManager fileExistsAtPath:versionJSON];
+    BOOL outputExists = result == 0 && [NSFileManager.defaultManager fileExistsAtPath:versionJSON];
+    NSDictionary *metadata = outputExists ? [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:versionJSON]
+                                                                           options:0 error:nil] : nil;
+    BOOL installed = [metadata isKindOfClass:NSDictionary.class] && [metadata[@"id"] isEqualToString:versionID] &&
+                     [metadata[@"inheritsFrom"] isKindOfClass:NSString.class] &&
+                     [metadata[@"libraries"] isKindOfClass:NSArray.class];
     if (!installed) {
-        completion(NO, [NSString stringWithFormat:@"NeoForge %@ did not create its client version metadata (installer exit code %d).", versionID, result]);
+        completion(NO, [NSString stringWithFormat:@"NeoForge %@ did not create valid client version metadata (installer exit code %d).", versionID, result]);
         return;
     }
     completion(YES, nil);

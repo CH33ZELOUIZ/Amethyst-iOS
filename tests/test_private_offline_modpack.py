@@ -29,7 +29,11 @@ def test_offline_importer_is_private_integrity_checked_and_atomic():
     assert "OfflineMaxBytes = 2ULL * 1024 * 1024 * 1024" in importer
     assert "moveItemAtPath:staging toPath:destination" in importer
     assert importer.index("launchNeoForgeInstaller") < importer.index("moveItemAtPath:staging toPath:destination")
-    assert importer.index("moveItemAtPath:staging toPath:destination") < importer.rindex("PLProfiles.current.profiles[profileName]")
+    assert importer.index("moveItemAtPath:staging toPath:destination") < importer.rindex("profiles.profiles[profileName]")
+    assert "OfflineNeoForge211264InstallerSHA256" in importer
+    assert "preflightZipAtPath" in importer
+    assert "validateDestinationCollisions" in importer
+    assert "[profiles save:&error]" in importer
 
 
 def test_import_ui_keeps_generic_curseforge_distinct_and_warns_about_phone_ram():
@@ -37,8 +41,8 @@ def test_import_ui_keeps_generic_curseforge_distinct_and_warns_about_phone_ram()
     task = source("Natives/MinecraftResourceDownloadTask.m")
     assert "OfflineModpackImporter isOfflinePackAtPath:dest" in view
     assert "CurseForge manifests require your API key" in view
-    assert "6016 MiB desktop recommendation is not an iPhone claim" in view
-    assert "start at 4096 MiB manually" in view
+    assert "no validated iPhone RAM allocation" in view
+    assert "physical memory and current allocation" in view
     assert "OfflineModpackImporter importPackAtPath:filePath downloader:self" in task
 
 
@@ -171,6 +175,21 @@ def test_importer_rejects_folder_ancestor_symlinks():
     assert "root.stringByResolvingSymlinksInPath" in importer
     assert "attributes[NSFileType] isEqual:NSFileTypeSymbolicLink" in importer
     assert "candidate.stringByResolvingSymlinksInPath" in importer
+
+
+def test_private_pack_ram_requirements_are_bound_and_confirmed_before_install():
+    importer = source("Natives/installer/modpack/OfflineModpackImporter.m")
+    view = source("Natives/installer/ModpackInstallViewController.m")
+    launcher = source("Natives/JavaLauncher.m")
+    assert "[control[@\"minimumRamMiB\"] unsignedLongLongValue] < 4096" in importer
+    assert "[control[@\"desktopRecommendedRamMiB\"] unsignedLongLongValue] < 6016" in importer
+    assert "requirementsForOfflinePackAtPath" in importer
+    assert "confirmOfflineImportAtPath" in view
+    assert "I understand — Import" in view
+    assert "physical < minimum || allocated < minimum" in view
+    assert "launchNeoForgeInstaller(installer, profileID, installerRoot" in importer
+    assert "[NSFileManager.defaultManager removeItemAtPath:publishedVersion" in importer
+    assert "metadata[@\"id\"] isEqualToString:versionID" in launcher
 
 
 if __name__ == "__main__":

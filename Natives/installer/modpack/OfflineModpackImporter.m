@@ -12,8 +12,60 @@ static const unsigned long long OfflineMaxSingleFile = 512ULL * 1024 * 1024;
 static const unsigned long long OfflineMaxControlBytes = 1024ULL * 1024;
 static const unsigned long long OfflineMaxChecksumBytes = 4ULL * 1024 * 1024;
 static const unsigned long long OfflineMaxCompressionRatio = 100;
+static const unsigned long long OfflineMaxCentralDirectoryBytes = 16ULL * 1024 * 1024;
+static const unsigned long long OfflineMaxInstallerBytes = 128ULL * 1024 * 1024;
+static NSString * const OfflineNeoForge211264InstallerSHA256 = @"d7c035dd5436a7c524dfbad6df191b0ef34179fd3edfee9dc99262af3b80239b";
+
+static uint16_t OfflineLE16(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
+static uint32_t OfflineLE32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
 
 @implementation OfflineModpackImporter
+
++ (BOOL)preflightZipAtPath:(NSString *)path error:(NSError **)error {
+    NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:path error:error];
+    unsigned long long size = [attributes[NSFileSize] unsignedLongLongValue];
+    if (!attributes || ![attributes[NSFileType] isEqual:NSFileTypeRegular] || size < 22) return [self fail:error description:@"The private pack is not a regular ZIP file."];
+    NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:path];
+    unsigned long long tailSize = MIN(size, 22ULL + 65535ULL);
+    @try { [handle seekToFileOffset:size - tailSize]; } @catch (NSException *exception) { return [self fail:error description:@"The private pack ZIP cannot be read."]; }
+    NSData *tail = [handle readDataToEndOfFile]; [handle closeFile];
+    const uint8_t *bytes = tail.bytes; NSInteger eocd = -1;
+    for (NSInteger i = (NSInteger)tail.length - 22; i >= 0; i--) if (OfflineLE32(bytes + i) == 0x06054b50) { eocd = i; break; }
+    if (eocd < 0 || (NSUInteger)eocd + 22 + OfflineLE16(bytes + eocd + 20) != tail.length) return [self fail:error description:@"The private pack ZIP has no valid end-of-central-directory record."];
+    uint16_t disk = OfflineLE16(bytes + eocd + 4), directoryDisk = OfflineLE16(bytes + eocd + 6), entries = OfflineLE16(bytes + eocd + 10);
+    uint32_t directoryBytes = OfflineLE32(bytes + eocd + 12), directoryOffset = OfflineLE32(bytes + eocd + 16);
+    if (disk || directoryDisk || entries == UINT16_MAX || directoryBytes == UINT32_MAX || directoryOffset == UINT32_MAX || entries > OfflineMaxEntries || directoryBytes > OfflineMaxCentralDirectoryBytes || (unsigned long long)directoryOffset + directoryBytes > size) return [self fail:error description:@"The private pack ZIP central directory exceeds supported safety bounds or requires unsupported ZIP64 metadata."];
+    return YES;
+}
+
++ (NSString *)filesystemIdentityForPath:(NSString *)path {
+    return [[path precomposedStringWithCanonicalMapping] lowercaseString];
+}
+
++ (BOOL)validateDestinationCollisions:(NSDictionary<NSString *, NSString *> *)checksums error:(NSError **)error {
+    NSMutableSet *files = [NSMutableSet set], *ancestors = [NSMutableSet set];
+    for (NSString *path in checksums) {
+        NSString *identity = [self filesystemIdentityForPath:path];
+        if ([files containsObject:identity] || [ancestors containsObject:identity] || [identity isEqualToString:[self filesystemIdentityForPath:@"duo-offline-pack.json"]] || [identity isEqualToString:[self filesystemIdentityForPath:@"SHA256SUMS.txt"]]) return [self fail:error description:@"The private pack contains filesystem-normalized destination collisions."];
+        NSArray *components = identity.pathComponents;
+        NSMutableArray *prefix = [NSMutableArray array];
+        for (NSUInteger i = 0; i + 1 < components.count; i++) { [prefix addObject:components[i]]; NSString *ancestor = [prefix componentsJoinedByString:@"/"]; if ([files containsObject:ancestor]) return [self fail:error description:@"The private pack contains a file/directory destination collision."]; [ancestors addObject:ancestor]; }
+        [files addObject:identity];
+    }
+    return YES;
+}
+
++ (NSString *)trustedInstallerHashForProfileID:(NSString *)profileID {
+    return [profileID isEqualToString:@"neoforge-21.1.264"] ? OfflineNeoForge211264InstallerSHA256 : nil;
+}
+
++ (BOOL)validateTrustedInstaller:(NSString *)installer profileID:(NSString *)profileID error:(NSError **)error {
+    NSString *expected = [self trustedInstallerHashForProfileID:profileID];
+    NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:installer error:error];
+    if (!expected || !attributes || [attributes[NSFileType] isEqual:NSFileTypeSymbolicLink] || ![attributes[NSFileType] isEqual:NSFileTypeRegular] || [attributes[NSFileSize] unsignedLongLongValue] > OfflineMaxInstallerBytes) return [self fail:error description:@"The required NeoForge installer is unsupported, unsafe, or missing."];
+    NSString *actual = [self sha256ForFile:installer error:error];
+    return actual && [actual isEqualToString:expected] ? YES : [self fail:error description:@"The required NeoForge installer does not match Duo's trusted official SHA-256."];
+}
 
 + (BOOL)fail:(NSError **)error description:(NSString *)description {
     if (error) *error = [NSError errorWithDomain:@"OfflineModpack" code:1 userInfo:@{NSLocalizedDescriptionKey: description}];
@@ -112,8 +164,9 @@ static const unsigned long long OfflineMaxCompressionRatio = 100;
     NSCharacterSet *safeVersionCharacters = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-"];
     if (![profileName isKindOfClass:NSString.class] || ![neoForge isKindOfClass:NSString.class] || profileName.pathComponents.count != 1 || ![self isSafeRelativePath:profileName] || ![neoForge hasPrefix:@"neoforge-"] || neoForge.length == @"neoforge-".length || [neoForge rangeOfCharacterFromSet:safeVersionCharacters.invertedSet].location != NSNotFound ||
         ![control[@"format"] isEqual:@"amethyst-duo-offline-pack"] || [control[@"formatVersion"] integerValue] != 1 || ![control[@"minecraftVersion"] isKindOfClass:NSString.class] || ![control[@"sha256sumsSHA256"] isKindOfClass:NSString.class] ||
-        ![control[@"payloadBytes"] respondsToSelector:@selector(unsignedLongLongValue)] || ![control[@"fileCount"] respondsToSelector:@selector(unsignedLongLongValue)] ||
-        [control[@"fileCount"] unsignedLongLongValue] != checksums.count || [control[@"payloadBytes"] unsignedLongLongValue] > OfflineMaxBytes || checksums.count > OfflineMaxEntries) return [self fail:error description:@"This is not a valid Duo private offline-pack control manifest."];
+        ![control[@"payloadBytes"] respondsToSelector:@selector(unsignedLongLongValue)] || ![control[@"minimumRamMiB"] respondsToSelector:@selector(unsignedLongLongValue)] || ![control[@"desktopRecommendedRamMiB"] respondsToSelector:@selector(unsignedLongLongValue)] ||
+        [control[@"fileCount"] unsignedLongLongValue] != checksums.count || [control[@"payloadBytes"] unsignedLongLongValue] > OfflineMaxBytes || checksums.count > OfflineMaxEntries ||
+        [control[@"minimumRamMiB"] unsignedLongLongValue] < 4096 || [control[@"desktopRecommendedRamMiB"] unsignedLongLongValue] < 6016 || [control[@"desktopRecommendedRamMiB"] unsignedLongLongValue] < [control[@"minimumRamMiB"] unsignedLongLongValue]) return [self fail:error description:@"This is not a valid Duo private offline-pack control manifest."];
     return YES;
 }
 
@@ -214,56 +267,106 @@ static const unsigned long long OfflineMaxCompressionRatio = 100;
     return valid && extractedFiles == checksums.count && (!error || !*error);
 }
 
++ (BOOL)publishInstallerLibrariesFrom:(NSString *)sourceRoot toGameRoot:(NSString *)gameRoot created:(NSMutableArray<NSString *> *)created error:(NSError **)error {
+    NSString *sourceLibraries = [sourceRoot stringByAppendingPathComponent:@"libraries"], *destinationLibraries = [gameRoot stringByAppendingPathComponent:@"libraries"];
+    NSDirectoryEnumerator *enumerator = [NSFileManager.defaultManager enumeratorAtPath:sourceLibraries];
+    for (NSString *relativePath in enumerator) {
+        NSString *source = [sourceLibraries stringByAppendingPathComponent:relativePath];
+        NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:source error:error];
+        if (!attributes || [attributes[NSFileType] isEqual:NSFileTypeSymbolicLink]) return [self fail:error description:@"The NeoForge installer produced an unsafe library path."];
+        if (![attributes[NSFileType] isEqual:NSFileTypeRegular]) continue;
+        NSString *destination = [destinationLibraries stringByAppendingPathComponent:relativePath];
+        if ([NSFileManager.defaultManager fileExistsAtPath:destination]) {
+            if (![[self sha256ForFile:source error:error] isEqualToString:[self sha256ForFile:destination error:error]]) return [self fail:error description:@"NeoForge library output conflicts with an existing file."];
+            continue;
+        }
+        if (![NSFileManager.defaultManager createDirectoryAtPath:destination.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:error] || ![NSFileManager.defaultManager copyItemAtPath:source toPath:destination error:error]) return NO;
+        [created addObject:destination];
+    }
+    return YES;
+}
+
 + (void)publishStaging:(NSString *)staging control:(NSDictionary *)control downloader:(MinecraftResourceDownloadTask *)downloader {
     NSString *profileName = control[@"profileName"], *minecraft = control[@"minecraftVersion"], *neoforge = control[@"neoforge"];
     NSString *profileID = [neoforge hasPrefix:@"neoforge-"] ? neoforge : nil, *gameDir = @(getenv("GAME_DIR"));
     NSString *destination = [gameDir stringByAppendingPathComponent:[@"custom_gamedir/" stringByAppendingString:profileName]]; NSError *error = nil;
     if (!profileID || PLProfiles.current.profiles[profileName] || [NSFileManager.defaultManager fileExistsAtPath:destination]) { [NSFileManager.defaultManager removeItemAtPath:staging error:nil]; [downloader finishDownloadWithErrorString:@"This private pack conflicts with an existing profile or game directory."]; return; }
     NSString *installer = [gameDir stringByAppendingPathComponent:[NSString stringWithFormat:@"neoforge-installers/%@-installer.jar", profileID]];
-    if (![NSFileManager.defaultManager fileExistsAtPath:installer]) { [NSFileManager.defaultManager removeItemAtPath:staging error:nil]; [downloader finishDownloadWithErrorString:@"The private pack is complete, but its verified NeoForge installer is missing. Transfer it privately to GAME_DIR/neoforge-installers before retrying."]; return; }
+    if (![self validateTrustedInstaller:installer profileID:profileID error:&error]) { [NSFileManager.defaultManager removeItemAtPath:staging error:nil]; [downloader finishDownloadWithErrorString:error.localizedDescription]; return; }
+    NSString *installerRoot = [[gameDir stringByAppendingPathComponent:@"custom_gamedir"] stringByAppendingPathComponent:[NSString stringWithFormat:@".offline-neoforge-%@", NSUUID.UUID.UUIDString]];
+    [NSFileManager.defaultManager removeItemAtPath:installerRoot error:nil];
+    if (![NSFileManager.defaultManager createDirectoryAtPath:installerRoot withIntermediateDirectories:YES attributes:nil error:&error]) { [NSFileManager.defaultManager removeItemAtPath:staging error:nil]; [downloader finishDownloadWithErrorString:error.localizedDescription]; return; }
     __block BOOL installed = NO; __block NSString *installError = nil;
-    launchNeoForgeInstaller(installer, profileID, gameDir, ^(BOOL success, NSString *message) { installed = success; installError = message; });
-    if (!installed || downloader.progress.cancelled || ![NSFileManager.defaultManager moveItemAtPath:staging toPath:destination error:&error]) { [NSFileManager.defaultManager removeItemAtPath:staging error:nil]; [downloader finishDownloadWithErrorString:installError ?: error.localizedDescription ?: @"NeoForge installation failed before this private pack could be published."]; return; }
-    PLProfiles.current.profiles[profileName] = [@{ @"gameDir": [NSString stringWithFormat:@"./custom_gamedir/%@", profileName], @"name": profileName, @"lastVersionId": profileID, @"icon": @"" } mutableCopy];
-    PLProfiles.current.selectedProfileName = profileName; [downloader finishDownloadWithSuccess];
+    // Install in a disposable root: GAME_DIR is untouched until the verified output is published.
+    launchNeoForgeInstaller(installer, profileID, installerRoot, ^(BOOL success, NSString *message) { installed = success; installError = message; });
+    NSString *generatedVersion = [NSString stringWithFormat:@"%@/versions/%@", installerRoot, profileID];
+    NSString *publishedVersion = [NSString stringWithFormat:@"%@/versions/%@", gameDir, profileID];
+    if (!installed || downloader.progress.cancelled || ![NSFileManager.defaultManager fileExistsAtPath:generatedVersion] || [NSFileManager.defaultManager fileExistsAtPath:publishedVersion]) { [NSFileManager.defaultManager removeItemAtPath:installerRoot error:nil]; [NSFileManager.defaultManager removeItemAtPath:staging error:nil]; [downloader finishDownloadWithErrorString:installError ?: @"NeoForge installation failed before this private pack could be published."]; return; }
+    NSMutableArray<NSString *> *createdLibraries = [NSMutableArray new];
+    BOOL librariesPublished = [self publishInstallerLibrariesFrom:installerRoot toGameRoot:gameDir created:createdLibraries error:&error];
+    if (!librariesPublished || ![NSFileManager.defaultManager createDirectoryAtPath:publishedVersion.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:&error] || ![NSFileManager.defaultManager moveItemAtPath:generatedVersion toPath:publishedVersion error:&error] || ![NSFileManager.defaultManager moveItemAtPath:staging toPath:destination error:&error]) { for (NSString *library in createdLibraries) [NSFileManager.defaultManager removeItemAtPath:library error:nil]; [NSFileManager.defaultManager removeItemAtPath:publishedVersion error:nil]; [NSFileManager.defaultManager removeItemAtPath:installerRoot error:nil]; [NSFileManager.defaultManager removeItemAtPath:staging error:nil]; [downloader finishDownloadWithErrorString:error.localizedDescription ?: @"NeoForge installation could not be published atomically."]; return; }
+    [NSFileManager.defaultManager removeItemAtPath:installerRoot error:nil];
+    PLProfiles *profiles = PLProfiles.current;
+    NSMutableDictionary *previousProfile = profiles.profiles[profileName];
+    NSString *previousSelection = profiles.selectedProfileName;
+    profiles.profiles[profileName] = [@{ @"gameDir": [NSString stringWithFormat:@"./custom_gamedir/%@", profileName], @"name": profileName, @"lastVersionId": profileID, @"icon": @"" } mutableCopy];
+    profiles.profileDict[@"selectedProfile"] = profileName;
+    if (![profiles save:&error]) {
+        if (previousProfile) profiles.profiles[profileName] = previousProfile; else [profiles.profiles removeObjectForKey:profileName];
+        profiles.profileDict[@"selectedProfile"] = previousSelection;
+        [profiles save:nil];
+        [NSFileManager.defaultManager removeItemAtPath:destination error:nil];
+        [NSFileManager.defaultManager removeItemAtPath:publishedVersion error:nil];
+        for (NSString *library in createdLibraries) [NSFileManager.defaultManager removeItemAtPath:library error:nil];
+        [downloader finishDownloadWithErrorString:error.localizedDescription ?: @"The profile could not be persisted; the private pack was rolled back."];
+        return;
+    }
+    [NSNotificationCenter.defaultCenter postNotificationName:PLProfilesDidChangeNotification object:profiles];
+    [downloader finishDownloadWithSuccess];
 }
 
 + (void)importPackAtPath:(NSString *)sourcePath downloader:(MinecraftResourceDownloadTask *)downloader {
     NSError *error = nil; NSFileManager *fm = NSFileManager.defaultManager; BOOL isDirectory = NO;
     if (![fm fileExistsAtPath:sourcePath isDirectory:&isDirectory]) { [downloader finishDownloadWithErrorString:@"The selected private pack is no longer available."]; return; }
     NSData *controlData = nil, *sumData = nil; UZKArchive *archive = nil; NSArray<UZKFileInfo *> *entries = nil; UZKFileInfo *controlInfo = nil, *sumsInfo = nil;
-    if (isDirectory) {
-        NSString *controlPath = [self validatedFolderFile:sourcePath relativePath:@"duo-offline-pack.json" error:&error];
-        controlData = controlPath ? [self readBoundedRegularFile:controlPath maximumBytes:OfflineMaxControlBytes error:&error] : nil;
-        NSString *sumPath = !error ? [self validatedFolderFile:sourcePath relativePath:@"SHA256SUMS.txt" error:&error] : nil;
-        sumData = sumPath ? [self readBoundedRegularFile:sumPath maximumBytes:OfflineMaxChecksumBytes error:&error] : nil;
+    if (isDirectory) { [downloader finishDownloadWithErrorString:@"Private offline packs must be imported as bounded ZIP files; folder imports are not supported."]; return; }
+    if (![self preflightZipAtPath:sourcePath error:&error]) { [downloader finishDownloadWithErrorString:error.localizedDescription]; return; }
+    archive = [[UZKArchive alloc] initWithPath:sourcePath error:&error];
+    if (archive && [self validatedArchive:archive controlInfo:&controlInfo sumsInfo:&sumsInfo entries:&entries error:&error]) {
+        controlData = [self readArchiveFile:archive info:controlInfo maximumBytes:OfflineMaxControlBytes error:&error];
+        sumData = !error ? [self readArchiveFile:archive info:sumsInfo maximumBytes:OfflineMaxChecksumBytes error:&error] : nil;
     }
-    else { archive = [[UZKArchive alloc] initWithPath:sourcePath error:&error]; if (archive && [self validatedArchive:archive controlInfo:&controlInfo sumsInfo:&sumsInfo entries:&entries error:&error]) { controlData = [self readArchiveFile:archive info:controlInfo maximumBytes:OfflineMaxControlBytes error:&error]; sumData = !error ? [self readArchiveFile:archive info:sumsInfo maximumBytes:OfflineMaxChecksumBytes error:&error] : nil; } }
     NSDictionary *control = controlData ? [NSJSONSerialization JSONObjectWithData:controlData options:0 error:&error] : nil;
     NSDictionary *checksums = !error ? [self checksumsFromData:sumData error:&error] : nil;
     NSString *actualManifestHash = sumData ? [self sha256ForData:sumData] : nil;
     unsigned long long actualBytes = 0;
-    BOOL payloadValid = isDirectory ? [self folderPayloadBytesAtRoot:sourcePath checksums:checksums actualBytes:&actualBytes error:&error] : [self validateArchivePayloadEntries:entries checksums:checksums actualBytes:&actualBytes error:&error];
-    if (error || ![control isKindOfClass:NSDictionary.class] || !checksums || ![self validateControl:control checksums:checksums error:&error] || !payloadValid || actualBytes != [control[@"payloadBytes"] unsignedLongLongValue] || ![actualManifestHash isEqualToString:control[@"sha256sumsSHA256"]]) { [downloader finishDownloadWithErrorString:error.localizedDescription ?: @"The private pack control, checksum manifest, or payload size is invalid."]; return; }
+    BOOL payloadValid = [self validateArchivePayloadEntries:entries checksums:checksums actualBytes:&actualBytes error:&error];
+    if (error || ![control isKindOfClass:NSDictionary.class] || !checksums || ![self validateDestinationCollisions:checksums error:&error] || ![self validateControl:control checksums:checksums error:&error] || !payloadValid || actualBytes != [control[@"payloadBytes"] unsignedLongLongValue] || ![actualManifestHash isEqualToString:control[@"sha256sumsSHA256"]]) { [downloader finishDownloadWithErrorString:error.localizedDescription ?: @"The private pack control, checksum manifest, or payload size is invalid."]; return; }
     if (![self checkFreeSpaceForBytes:actualBytes atPath:@(getenv("GAME_DIR")) error:&error]) { [downloader finishDownloadWithErrorString:error.localizedDescription]; return; }
     downloader.progress.totalUnitCount = checksums.count + 1;
     NSString *staging = [[@(getenv("GAME_DIR")) stringByAppendingPathComponent:@"custom_gamedir"] stringByAppendingPathComponent:[NSString stringWithFormat:@".offline-installing-%@", NSUUID.UUID.UUIDString]];
     [fm removeItemAtPath:staging error:nil];
     if (![fm createDirectoryAtPath:staging withIntermediateDirectories:YES attributes:nil error:&error]) { [downloader finishDownloadWithErrorString:error.localizedDescription]; return; }
-    BOOL copied = isDirectory ? [self copyFolder:sourcePath checksums:checksums to:staging progress:downloader.progress error:&error] : [self extractArchive:archive checksums:checksums entries:entries to:staging progress:downloader.progress error:&error];
+    BOOL copied = [self extractArchive:archive checksums:checksums entries:entries to:staging progress:downloader.progress error:&error];
     if (!copied || downloader.progress.cancelled) { [fm removeItemAtPath:staging error:nil]; [downloader finishDownloadWithErrorString:error.localizedDescription ?: @"Private pack import was cancelled or failed integrity verification."]; return; }
     downloader.progress.completedUnitCount++; [self publishStaging:staging control:control downloader:downloader];
+}
+
++ (NSDictionary<NSString *, NSNumber *> *)requirementsForOfflinePackAtPath:(NSString *)path {
+    NSError *error = nil;
+    if (![self preflightZipAtPath:path error:&error]) return nil;
+    UZKArchive *archive = [[UZKArchive alloc] initWithPath:path error:&error]; UZKFileInfo *control = nil;
+    if (!archive || ![self validatedArchive:archive controlInfo:&control sumsInfo:nil entries:nil error:&error]) return nil;
+    NSData *data = [self readArchiveFile:archive info:control maximumBytes:OfflineMaxControlBytes error:&error];
+    NSDictionary *manifest = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:&error] : nil;
+    if (error || ![manifest isKindOfClass:NSDictionary.class] || ![manifest[@"minimumRamMiB"] respondsToSelector:@selector(unsignedLongLongValue)] || ![manifest[@"desktopRecommendedRamMiB"] respondsToSelector:@selector(unsignedLongLongValue)]) return nil;
+    return @{ @"minimumRamMiB": manifest[@"minimumRamMiB"], @"desktopRecommendedRamMiB": manifest[@"desktopRecommendedRamMiB"] };
 }
 
 + (BOOL)isOfflinePackAtPath:(NSString *)path {
     NSError *error = nil; BOOL isDirectory = NO;
     if (![NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&isDirectory]) return NO;
-    if (isDirectory) {
-        NSString *controlPath = [self validatedFolderFile:path relativePath:@"duo-offline-pack.json" error:&error];
-        NSData *data = controlPath ? [self readBoundedRegularFile:controlPath maximumBytes:OfflineMaxControlBytes error:&error] : nil;
-        NSDictionary *control = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:&error] : nil;
-        return !error && [control isKindOfClass:NSDictionary.class] && [control[@"format"] isEqual:@"amethyst-duo-offline-pack"] && [control[@"formatVersion"] integerValue] == 1;
-    }
+    if (isDirectory || ![self preflightZipAtPath:path error:&error]) return NO;
     UZKArchive *archive = [[UZKArchive alloc] initWithPath:path error:&error]; UZKFileInfo *control = nil, *sums = nil;
     if (!archive || ![self validatedArchive:archive controlInfo:&control sumsInfo:&sums entries:nil error:&error]) return NO;
     NSData *data = [self readArchiveFile:archive info:control maximumBytes:OfflineMaxControlBytes error:&error]; NSDictionary *manifest = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:&error] : nil;

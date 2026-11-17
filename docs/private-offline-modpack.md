@@ -29,7 +29,9 @@ Transfer the verified installer privately to `GAME_DIR/neoforge-installers/` as
 remain separate: they contain only a manifest and require the user's CurseForge
 API key to retrieve authorized mod files.
 
-Integrated Boogaloo's source manifest recommends 6016 MiB for desktop. That is
-not an iPhone performance claim. On an iPhone Duo, start with a manually selected
-4096 MiB allocation only if the device has sufficient physical memory and storage;
-reduce it if iOS terminates the app, and expect the pack may still be unusable.
+`minimumRamMiB` is at least 4096 and `desktopRecommendedRamMiB` is at least
+6016 in format version 1. Duo shows the device's physical RAM and current Java
+allocation, blocks import if either misses the pack minimum, and otherwise
+requires an explicit experimental-import confirmation. The 6016 MiB number is
+desktop guidance, not an iPhone performance claim. No iPhone allocation is
+validated yet; launch remains experimental until confirmed on device.

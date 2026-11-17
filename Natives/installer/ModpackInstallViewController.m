@@ -78,6 +78,26 @@ static ModpackInstallViewController *gPickerOwner;
     return found;
 }
 
+- (void)confirmOfflineImportAtPath:(NSString *)path {
+    NSDictionary *requirements = [OfflineModpackImporter requirementsForOfflinePackAtPath:path];
+    unsigned long long physical = NSProcessInfo.processInfo.physicalMemory / (1024ULL * 1024ULL);
+    unsigned long long allocated = getPrefInt(@"java.allocated_memory");
+    unsigned long long minimum = [requirements[@"minimumRamMiB"] unsignedLongLongValue];
+    unsigned long long desktopRecommended = [requirements[@"desktopRecommendedRamMiB"] unsignedLongLongValue];
+    NSString *message = [NSString stringWithFormat:@"Experimental private full-client pack. It requires at least %llu MiB allocated RAM; its desktop recommendation is %llu MiB. This iPhone has %llu MiB physical RAM and Duo is currently allocated %llu MiB. No iPhone allocation is validated for this pack.", minimum, desktopRecommended, physical, allocated];
+    if (!requirements || physical < minimum || allocated < minimum) {
+        showDialog(@"Private pack blocked", [message stringByAppendingString:@" Do not import until the device and current Java allocation meet the minimum."]);
+        [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Experimental private pack" message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) { [NSFileManager.defaultManager removeItemAtPath:path error:nil]; }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"I understand — Import" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:nil userInfo:@{@"localPath": path}];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)importLocalMrpackAtPath:(NSString *)src {
     NSString *dest = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"import-" stringByAppendingString:src.lastPathComponent]];
     [NSFileManager.defaultManager removeItemAtPath:dest error:nil];
@@ -89,8 +109,8 @@ static ModpackInstallViewController *gPickerOwner;
     }
     [NSFileManager.defaultManager removeItemAtPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"] error:nil];
     if ([OfflineModpackImporter isOfflinePackAtPath:dest]) {
-        NSLog(@"[ModpackImport] Installing private offline pack %@", dest);
-        [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:nil userInfo:@{@"localPath": dest}];
+        NSLog(@"[ModpackImport] Confirming private offline pack %@", dest);
+        [self confirmOfflineImportAtPath:dest];
         return;
     }
     NSError *formatError = nil;
@@ -111,7 +131,7 @@ static ModpackInstallViewController *gPickerOwner;
 
 - (void)actionImportMrpack {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Import Modpack"
-        message:@"Choose a Modrinth .mrpack, an official CurseForge client ZIP, or a private Duo offline-pack ZIP. Generic ZIP archives are rejected. CurseForge manifests require your API key to download authorized mods. Private full-client packs need roughly two payload copies plus 1 GiB free storage; their 6016 MiB desktop recommendation is not an iPhone claim—start at 4096 MiB manually only if your device has enough RAM." preferredStyle:UIAlertControllerStyleActionSheet];
+        message:@"Choose a Modrinth .mrpack, an official CurseForge client ZIP, or a private Duo offline-pack ZIP. Generic ZIP archives are rejected. CurseForge manifests require your API key to download authorized mods. Private full-client packs need roughly two payload copies plus 1 GiB free storage. There is no validated iPhone RAM allocation for this pack; only continue after confirming your device's physical memory and current allocation are sufficient." preferredStyle:UIAlertControllerStyleActionSheet];
     for (NSString *path in [self localPackFiles]) {
         [sheet addAction:[UIAlertAction actionWithTitle:path.lastPathComponent style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
             [self importLocalMrpackAtPath:path];
@@ -158,8 +178,8 @@ static ModpackInstallViewController *gPickerOwner;
     // Local imports do not carry the remote browser icon; drop stale state first.
     [NSFileManager.defaultManager removeItemAtPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"] error:nil];
     if ([OfflineModpackImporter isOfflinePackAtPath:dest]) {
-        NSLog(@"[ModpackImport] Installing private offline pack %@", dest);
-        [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" object:nil userInfo:@{@"localPath": dest}];
+        NSLog(@"[ModpackImport] Confirming private offline pack %@", dest);
+        [self confirmOfflineImportAtPath:dest];
         return;
     }
     NSError *formatError = nil;
