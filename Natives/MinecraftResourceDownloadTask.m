@@ -325,6 +325,15 @@
     [self.progressList removeAllObjects];
 }
 
+- (void)finishDownloadWithSuccess {
+    // Success is signaled by the overall NSProgress finishing; the launcher UI
+    // observes progress.finished to dismiss the download popover and reload profiles.
+    if (self.progress.totalUnitCount < 1) {
+        self.progress.totalUnitCount = 1;
+    }
+    self.progress.completedUnitCount = self.progress.totalUnitCount;
+}
+
 - (void)finishDownloadWithErrorString:(NSString *)error {
     [self.progress cancel];
     [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];

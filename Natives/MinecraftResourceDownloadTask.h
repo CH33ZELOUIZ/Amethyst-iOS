@@ -11,6 +11,7 @@
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path;
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path forceSHA:(BOOL)forceSHA success:(void (^)(void))success failure:(void (^)(NSError *error))failure;
 - (void)finishDownloadWithErrorString:(NSString *)error;
+- (void)finishDownloadWithSuccess;
 
 - (void)downloadVersion:(NSDictionary *)version;
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion;
