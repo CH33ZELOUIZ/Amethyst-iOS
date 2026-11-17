@@ -29,13 +29,16 @@
 }
 
 // Add file to the queue
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)())success {
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path forceSHA:(BOOL)forceSHA success:(void (^)())success failure:(void (^)(NSError *error))failure {
     BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
-    // logSuccess?
-    if (fileExists && [self checkSHA:sha forFile:path altName:altName]) {
+    BOOL (^verify)(void) = ^BOOL {
+        return forceSHA ? [self checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:altName == nil] : [self checkSHA:sha forFile:path altName:altName];
+    };
+    if (fileExists && verify()) {
         if (success) success();
         return nil;
     } else if (![self checkAccessWithDialog:YES]) {
+        if (failure) failure([NSError errorWithDomain:@"MinecraftResourceDownload" code:NSURLErrorUserAuthenticationRequired userInfo:nil]);
         return nil;
     }
 
@@ -58,8 +61,11 @@
             // Ignore any further errors
         } else if (error != nil) {
             [self finishDownloadWithError:error file:name];
-        } else if (![self checkSHA:sha forFile:path altName:altName]) {
-            [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
+            if (failure) failure(error);
+        } else if (!verify()) {
+            NSError *verificationError = [NSError errorWithDomain:@"MinecraftResourceDownload" code:NSURLErrorCannotDecodeContentData userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]}];
+            [self finishDownloadWithError:verificationError file:name];
+            if (failure) failure(verificationError);
         } else {
             progress.totalUnitCount = progress.completedUnitCount;
             if (success) success();
@@ -72,6 +78,10 @@
     }
 
     return task;
+}
+
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)())success {
+    return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path forceSHA:NO success:success failure:nil];
 }
 
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path {

@@ -143,7 +143,8 @@ static BOOL versionHasVulkanBackend(NSString *versionId) {
     return found;
 }
 
-int launchJVM(NSString *username, id launchTarget, int width, int height, int minVersion) {
+static int launchJVMWithJarArguments(NSString *username, id launchTarget, int width, int height,
+                                     int minVersion, NSArray<NSString *> *jarArguments) {
     NSLog(@"[JavaLauncher] Beginning JVM launch");
 
     init_loadDefaultEnv();
@@ -584,6 +585,9 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         margv[++margc] = [launchTarget[@"id"] UTF8String];
     } else {
         margv[++margc] = [launchTarget UTF8String];
+        for (NSString *argument in jarArguments) {
+            margv[++margc] = argument.UTF8String;
+        }
     }
     //margv[++margc] = "ghidra.GhidraRun";
 
@@ -617,4 +621,26 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
                    "java", "openjdk",
                    /* (const_jargs != NULL) ? JNI_TRUE : */ JNI_FALSE,
                    JNI_TRUE, JNI_FALSE, JNI_TRUE);
+}
+
+int launchJVM(NSString *username, id launchTarget, int width, int height, int minVersion) {
+    return launchJVMWithJarArguments(username, launchTarget, width, height, minVersion, nil);
+}
+
+void launchNeoForgeInstaller(NSString *installerPath, NSString *versionID, NSString *installationDirectory,
+                             void (^completion)(BOOL installed, NSString *errorMessage)) {
+    if (!installerPath.length || !versionID.length || !installationDirectory.length || [versionID containsString:@"/"] || [versionID containsString:@"\\"]) {
+        completion(NO, @"The NeoForge installer request is invalid.");
+        return;
+    }
+
+    int result = launchJVMWithJarArguments(nil, installerPath, windowWidth, windowHeight, 21,
+                                           @[@"--installClient", installationDirectory]);
+    NSString *versionJSON = [NSString stringWithFormat:@"%@/versions/%@/%@.json", installationDirectory, versionID, versionID];
+    BOOL installed = result == 0 && [NSFileManager.defaultManager fileExistsAtPath:versionJSON];
+    if (!installed) {
+        completion(NO, [NSString stringWithFormat:@"NeoForge %@ did not create its client version metadata (installer exit code %d).", versionID, result]);
+        return;
+    }
+    completion(YES, nil);
 }

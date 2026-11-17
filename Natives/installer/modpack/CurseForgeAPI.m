@@ -2,6 +2,7 @@
 #import "CurseForgeAPI.h"
 #import "ModrinthSearchFilters.h"
 #import "MinecraftResourceDownloadTask.h"
+#import "JavaLauncher.h"
 #import "PLProfiles.h"
 #import "utils.h"
 #import <Security/Security.h>
@@ -199,8 +200,8 @@ static NSNumber *CFLoader(NSDictionary *filters) {
         [urls addObject:CFString(file[@"url"])];
         [hashes addObject:CFString(file[@"hashes"][@"sha1"])];
         [sizes addObject:file[@"size"] ?: @0];
-        BOOL neoForge = [version[@"loaders"] containsObject:@"neoforge"];
-        [reasons addObject:neoForge ? @"This NeoForge modpack cannot be installed yet: the standalone NeoForge installer is not wired into modpack profiles. Downloadability does not prove it can launch on this device." : @"CurseForge modpack installation is not available yet. The app can browse official CurseForge metadata with your API key, but it will not bypass CurseForge distribution rules or pretend this pack is playable."];
+        BOOL downloadable = ![version[@"downloadUnavailable"] boolValue] && CFString(file[@"url"]).length && CFString(file[@"hashes"][@"sha1"]).length;
+        [reasons addObject:downloadable ? @"" : @"CurseForge does not provide an authorized download for this modpack version."];
     }
     if (!names.count) {
         self.lastError = [NSError errorWithDomain:@"CurseForge" code:3 userInfo:@{NSLocalizedDescriptionKey: NSLocalizedString(@"content.invalid_response", nil)}];
@@ -216,6 +217,10 @@ static NSNumber *CFLoader(NSDictionary *filters) {
 }
 
 - (void)downloader:(MinecraftResourceDownloadTask *)downloader submitDownloadTasksFromPackage:(NSString *)packagePath toPath:(NSString *)destPath {
+    if (![self checkConfiguration]) {
+        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"%@ Open Content Settings, add your CurseForge API key, then retry this local CurseForge archive.", self.lastError.localizedDescription]];
+        return;
+    }
     NSError *error;
     UZKArchive *archive = [[UZKArchive alloc] initWithPath:packagePath error:&error];
     if (error) {
@@ -258,8 +263,12 @@ static NSNumber *CFLoader(NSDictionary *filters) {
     } else if ([loaderID hasPrefix:@"quilt-"]) {
         dependency = @{ @"minecraft": minecraftVersion, @"quilt-loader": [loaderID substringFromIndex:@"quilt-".length] };
     } else if ([loaderID hasPrefix:@"neoforge-"]) {
-        [downloader finishDownloadWithErrorString:@"This CurseForge pack requires NeoForge. NeoForge modpack profiles are not supported in this build; it was not installed as a potentially unlaunchable profile."];
-        return;
+        NSCharacterSet *validNeoForgeVersionCharacters = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-"];
+        if (loaderID.length == @"neoforge-".length || [loaderID rangeOfCharacterFromSet:validNeoForgeVersionCharacters.invertedSet].location != NSNotFound) {
+            [downloader finishDownloadWithErrorString:@"This CurseForge pack declares an invalid NeoForge version."];
+            return;
+        }
+        dependency = @{ @"minecraft": minecraftVersion, @"neoforge": loaderID };
     } else if (loaderID.length) {
         [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"This CurseForge pack uses unsupported loader '%@'.", loaderID]];
         return;
@@ -281,34 +290,173 @@ static NSNumber *CFLoader(NSDictionary *filters) {
         [downloads addObject:download];
     }
 
-    downloader.progress.totalUnitCount = downloads.count;
-    for (NSDictionary *download in downloads) {
-        NSString *path = [ModpackUtils safeDestinationForRelativePath:[@"mods" stringByAppendingPathComponent:download[@"filename"]] root:destPath error:&error];
-        if (!path) {
-            [downloader finishDownloadWithErrorString:error.localizedDescription ?: @"The CurseForge manifest contains an unsafe mod filename."];
-            return;
-        }
-        NSURLSessionDownloadTask *task = [downloader createDownloadTask:download[@"url"] size:[download[@"size"] unsignedLongLongValue] sha:download[@"hashes"][@"sha1"] altName:nil toPath:path];
-        if (task) [task resume];
-        else if (!downloader.progress.cancelled) downloader.progress.completedUnitCount++;
-        else if (downloader.progress.cancelled) return;
+    // Compute depInfo early to get the profileID for preflight collision checks
+    NSDictionary *depInfo = [ModpackUtils infoForDependencies:dependency];
+    NSString *profileID = dependency[@"neoforge"] ?: depInfo[@"id"] ?: minecraftVersion;
+    NSString *packName = CFString(manifest[@"name"]);
+    NSString *gameDirectory = @(getenv("GAME_DIR"));
+    NSString *neoForgeVersionPath = [NSString stringWithFormat:@"%@/versions/%@", gameDirectory, profileID];
+    if (downloader.progress.cancelled) return;
+    if (PLProfiles.current.profiles[packName] || [NSFileManager.defaultManager fileExistsAtPath:destPath] ||
+        (dependency[@"neoforge"] && [NSFileManager.defaultManager fileExistsAtPath:neoForgeVersionPath])) {
+        [downloader finishDownloadWithErrorString:@"A profile or installed version with this modpack's name already exists. Rename or remove it before importing."];
+        return;
     }
-    [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&error];
+
+    NSString *stagingPath = [destPath stringByAppendingFormat:@".installing-%@", NSUUID.UUID.UUIDString];
+    [NSFileManager.defaultManager removeItemAtPath:stagingPath error:nil];
+    if (![NSFileManager.defaultManager createDirectoryAtPath:stagingPath withIntermediateDirectories:YES attributes:nil error:&error]) {
+        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Unable to prepare the modpack installation: %@", error.localizedDescription]];
+        return;
+    }
+    [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:stagingPath error:&error];
     if (error) {
+        [NSFileManager.defaultManager removeItemAtPath:stagingPath error:nil];
         [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Unable to extract CurseForge overrides safely: %@", error.localizedDescription]];
         return;
     }
-    [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
 
-    NSDictionary *depInfo = [ModpackUtils infoForDependencies:dependency];
+    dispatch_group_t downloadsComplete = dispatch_group_create();
+    __block BOOL failed = NO;
+    void (^rollback)(void) = ^{
+        @synchronized (downloadsComplete) {
+            if (failed) return;
+            failed = YES;
+        }
+        [NSFileManager.defaultManager removeItemAtPath:stagingPath error:nil];
+    };
+    for (NSDictionary *download in downloads) {
+        NSString *path = [ModpackUtils safeDestinationForRelativePath:[@"mods" stringByAppendingPathComponent:download[@"filename"]] root:stagingPath error:&error];
+        if (!path) {
+            rollback();
+            [downloader finishDownloadWithErrorString:error.localizedDescription ?: @"The CurseForge manifest contains an unsafe mod filename."];
+            return;
+        }
+        dispatch_group_enter(downloadsComplete);
+        NSURLSessionDownloadTask *task = [downloader createDownloadTask:download[@"url"] size:[download[@"size"] unsignedLongLongValue] sha:download[@"hashes"][@"sha1"] altName:nil toPath:path forceSHA:YES success:^{
+            dispatch_group_leave(downloadsComplete);
+        } failure:^(NSError *downloadError) {
+            rollback();
+            dispatch_group_leave(downloadsComplete);
+        }];
+        if (task) [task resume];
+        // Cached files call success synchronously. An access failure has already cancelled the task.
+        else if (downloader.progress.cancelled) { rollback(); return; }
+    }
+
     if (depInfo[@"json"]) {
         NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("GAME_DIR"), depInfo[@"id"]];
-        [[downloader createDownloadTask:depInfo[@"json"] size:0 sha:nil altName:nil toPath:jsonPath] resume];
+        dispatch_group_enter(downloadsComplete);
+        NSURLSessionDownloadTask *task = [downloader createDownloadTask:depInfo[@"json"] size:0 sha:nil altName:nil toPath:jsonPath forceSHA:NO success:^{
+            dispatch_group_leave(downloadsComplete);
+        } failure:^(NSError *downloadError) {
+            rollback();
+            dispatch_group_leave(downloadsComplete);
+        }];
+        if (task) [task resume];
+        else if (downloader.progress.cancelled) { rollback(); return; }
     }
-    NSString *profileID = depInfo[@"id"] ?: minecraftVersion;
-    NSString *packName = CFString(manifest[@"name"]);
-    PLProfiles *profiles = PLProfiles.current;
-    profiles.profiles[packName] = @{@"gameDir": [NSString stringWithFormat:@"./custom_gamedir/%@", destPath.lastPathComponent], @"name": packName, @"lastVersionId": profileID, @"icon": @""}.mutableCopy;
-    profiles.selectedProfileName = packName;
+    NSString *neoForgeInstallerPath;
+    NSString *neoForgeMavenVersion;
+    if (dependency[@"neoforge"]) {
+        // Separate Maven version (21.1.264) from launcher profile ID (neoforge-21.1.264)
+        neoForgeMavenVersion = [dependency[@"neoforge"] substringFromIndex:@"neoforge-".length];
+        neoForgeInstallerPath = [NSString stringWithFormat:@"%s/neoforge-installers/%@-installer.jar", getenv("GAME_DIR"), profileID];
+        NSString *installerURL = [NSString stringWithFormat:@"https://maven.neoforged.net/releases/net/neoforged/neoforge/%1$@/%1$@-installer.jar", neoForgeMavenVersion];
+        NSString *installerSHA1URL = [NSString stringWithFormat:@"https://maven.neoforged.net/releases/net/neoforged/neoforge/%1$@/%1$@-installer.jar.sha1", neoForgeMavenVersion];
+        dispatch_group_enter(downloadsComplete);
+        NSURLSessionDownloadTask *shaTask = [downloader createDownloadTask:installerSHA1URL size:0 sha:nil altName:nil toPath:[neoForgeInstallerPath stringByAppendingString:@".sha1"] forceSHA:NO success:^{
+            dispatch_group_leave(downloadsComplete);
+        } failure:^(NSError *downloadError) {
+            rollback();
+            dispatch_group_leave(downloadsComplete);
+        }];
+        if (shaTask) [shaTask resume];
+        else if (downloader.progress.cancelled) { rollback(); return; }
+        
+        dispatch_group_enter(downloadsComplete);
+        dispatch_group_notify(downloadsComplete, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            if (failed || downloader.progress.cancelled) {
+                dispatch_group_leave(downloadsComplete);
+                return;
+            }
+            NSString *expectedSHA1 = [[NSString stringWithContentsOfFile:[neoForgeInstallerPath stringByAppendingString:@".sha1"] encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            [NSFileManager.defaultManager removeItemAtPath:[neoForgeInstallerPath stringByAppendingString:@".sha1"] error:nil];
+            if (!expectedSHA1.length) {
+                rollback();
+                dispatch_group_leave(downloadsComplete);
+                return;
+            }
+            dispatch_group_enter(downloadsComplete);
+            NSURLSessionDownloadTask *task = [downloader createDownloadTask:installerURL size:0 sha:expectedSHA1 altName:[NSString stringWithFormat:@"%@ installer", profileID] toPath:neoForgeInstallerPath forceSHA:YES success:^{
+                dispatch_group_leave(downloadsComplete);
+            } failure:^(NSError *downloadError) {
+                rollback();
+                dispatch_group_leave(downloadsComplete);
+            }];
+            if (task) [task resume];
+            else if (downloader.progress.cancelled) { rollback(); }
+            dispatch_group_leave(downloadsComplete);
+        });
+    }
+    // Complete the prepareForDownload sentinel. The byte-weighted child progresses
+    // account for the actual downloads; never add a second per-file unit model.
+    downloader.progress.completedUnitCount = 1;
+    dispatch_group_notify(downloadsComplete, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        @synchronized (downloadsComplete) {
+            if (failed || downloader.progress.cancelled) return;
+            failed = YES; // prevent a late failure from publishing after this point
+        }
+        
+        // Check cancellation before proceeding with installation
+        if (downloader.progress.cancelled) {
+            [NSFileManager.defaultManager removeItemAtPath:stagingPath error:nil];
+            return;
+        }
+        
+        // Preflight collision check for profile name (already done earlier, but recheck after downloads)
+        if (PLProfiles.current.profiles[packName]) {
+            [NSFileManager.defaultManager removeItemAtPath:stagingPath error:nil];
+            [downloader finishDownloadWithErrorString:@"A profile with this modpack's name was created during installation. Rename or remove it before retrying."];
+            return;
+        }
+        
+        if (neoForgeInstallerPath) {
+            __block BOOL installerSucceeded = NO;
+            __block NSString *installerError;
+            NSString *gameDirectory = @(getenv("GAME_DIR"));
+            // Use staging path as installation directory to isolate mutations from GAME_DIR
+            launchNeoForgeInstaller(neoForgeInstallerPath, profileID, gameDirectory, ^(BOOL installed, NSString *errorMessage) {
+                installerSucceeded = installed;
+                installerError = errorMessage;
+            });
+            [NSFileManager.defaultManager removeItemAtPath:neoForgeInstallerPath error:nil];
+            if (!installerSucceeded) {
+                [NSFileManager.defaultManager removeItemAtPath:stagingPath error:nil];
+                [downloader finishDownloadWithErrorString:installerError ?: @"NeoForge client installation failed before the modpack profile could be published."];
+                return;
+            }
+        }
+        
+        // Final cancellation check before publication
+        if (downloader.progress.cancelled) {
+            [NSFileManager.defaultManager removeItemAtPath:stagingPath error:nil];
+            return;
+        }
+        
+        NSError *moveError;
+        if ([NSFileManager.defaultManager fileExistsAtPath:destPath] || ![NSFileManager.defaultManager moveItemAtPath:stagingPath toPath:destPath error:&moveError]) {
+            [NSFileManager.defaultManager removeItemAtPath:stagingPath error:nil];
+            [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Unable to publish the completed modpack installation: %@", moveError.localizedDescription ?: @"the destination already exists"]];
+            return;
+        }
+        PLProfiles *profiles = PLProfiles.current;
+        profiles.profiles[packName] = @{@"gameDir": [NSString stringWithFormat:@"./custom_gamedir/%@", destPath.lastPathComponent], @"name": packName, @"lastVersionId": profileID, @"icon": @""}.mutableCopy;
+        profiles.selectedProfileName = packName;
+        [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
+        
+        // Complete the progress only after all installation and publication steps succeed
+        [downloader finishDownloadWithSuccess];
+    });
 }
 @end

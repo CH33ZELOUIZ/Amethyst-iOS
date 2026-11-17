@@ -18,3 +18,9 @@ typedef jint JLI_Launch_func(int argc, const char ** argv, /* main argc, argc */
 JLI_Launch_func *pJLI_Launch;
 
 int launchJVM(NSString *username, id launchTarget, int width, int height, int minVersion);
+
+// Runs an official NeoForge installer without presenting its desktop Swing UI.
+// `installationDirectory` is a private staging game directory, never GAME_DIR.
+// The completion runs on the caller's background queue after the installer returns.
+void launchNeoForgeInstaller(NSString *installerPath, NSString *versionID, NSString *installationDirectory,
+                             void (^completion)(BOOL installed, NSString *errorMessage));

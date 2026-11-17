@@ -56,10 +56,17 @@ def test_archives_are_bounded_and_reject_unsafe_entries():
     assert '[self validateArchive:archive error:error]' in utils
 
 
-def test_neoforge_is_not_offered_as_playable():
+def test_neoforge_modpacks_use_the_official_headless_client_installer_before_profile_publish():
     curse = source("Natives/installer/modpack/CurseForgeAPI.m")
-    assert '[version[@"loaders"] containsObject:@"neoforge"]' in curse
-    assert 'not wired into modpack profiles' in curse
+    launcher = source("Natives/JavaLauncher.m")
+    assert '[loaderID hasPrefix:@"neoforge-"]' in curse
+    assert 'maven.neoforged.net/releases/net/neoforged/neoforge' in curse
+    assert 'launchNeoForgeInstaller(neoForgeInstallerPath, profileID' in curse
+    assert curse.index('launchNeoForgeInstaller(neoForgeInstallerPath, profileID') < curse.index('profiles.profiles[packName]')
+    assert 'standalone NeoForge installer is not wired into modpack profiles' not in curse
+    assert '@[@"--installClient", installationDirectory]' in launcher
+    assert 'int result = launchJVMWithJarArguments(nil, installerPath' in launcher
+    assert 'result == 0 && [NSFileManager.defaultManager fileExistsAtPath:versionJSON]' in launcher
 
 
 def test_curseforge_archives_use_only_official_file_metadata():
@@ -68,8 +75,27 @@ def test_curseforge_archives_use_only_official_file_metadata():
     assert 'versionForID:CFIdentifier(candidate[@"fileID"]) projectID:CFIdentifier(candidate[@"projectID"])' in curse
     assert '[file[@"downloadUnavailable"] boolValue]' in curse
     assert 'sha:download[@"hashes"][@"sha1"]' in curse
+    assert 'forceSHA:YES' in curse
     assert 'extractDirectory:@"overrides"' in curse
-    assert 'requires NeoForge. NeoForge modpack profiles are not supported' in curse
+    assert 'dependency = @{ @"minecraft": minecraftVersion, @"neoforge": loaderID }' in curse
+
+
+def test_curseforge_install_is_staged_and_published_only_after_all_downloads():
+    curse = source("Natives/installer/modpack/CurseForgeAPI.m")
+    assert 'stagingPath = [destPath stringByAppendingFormat:@".installing-%@"' in curse
+    assert 'root:stagingPath' in curse
+    assert 'dispatch_group_notify(downloadsComplete' in curse
+    assert curse.index('moveItemAtPath:stagingPath toPath:destPath') < curse.index('profiles.profiles[packName]')
+    assert 'removeItemAtPath:stagingPath' in curse
+    assert 'Open Content Settings, add your CurseForge API key' in curse
+
+
+def test_required_curseforge_hashes_ignore_global_preference_and_progress_is_not_double_counted():
+    task = source("Natives/MinecraftResourceDownloadTask.m")
+    curse = source("Natives/installer/modpack/CurseForgeAPI.m")
+    assert 'forceSHA ? [self checkSHAIgnorePref:sha' in task
+    assert 'downloader.progress.totalUnitCount = downloads.count' not in curse
+    assert 'downloader.progress.completedUnitCount = 1' in curse
 
 
 if __name__ == "__main__":
